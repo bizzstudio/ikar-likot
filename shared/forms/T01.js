@@ -7,7 +7,7 @@ export const T01 = {
   layout: "matrix",
   title: "טופס בדיקת ניקיון ותשתיות",
   header: {
-    rightLines: ["משה נהוראי מרקטינג בע״מ – מחסן", { sub: "אבטחת איכות" }],
+    rightLines: ["האיכר – מחסן", { sub: "אבטחת איכות" }],
     metaLines: ["טופס T01", "תאריך עדכון: 20/01/26", "עמוד 1 מתוך 1"],
   },
   instructions: {

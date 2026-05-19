@@ -36,7 +36,7 @@ function Login() {
             <div className="card">
                 {/* <span className="title">ברוכים הבאים למערכת הליקוט של</span> */}
                 <img src={leaf} alt="leaf" className="leaf" />
-                <img src={loginImg} alt="login image" className="loginImg" />
+                <img src={loginImg} alt="לוגו האיכר - מערכת ליקוט" className="loginImg" />
                 <form className="form" onSubmit={handleLogin}>
                     <div className="group">
                         <input

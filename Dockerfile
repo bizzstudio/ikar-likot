@@ -4,7 +4,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-# Vite inlines VITE_* vars at build time — .env must be present (it is copied in).
+# "/api" => same origin, nginx proxies it to the backend (overrides VITE_MAIN_SERVER_URL in .env).
+ARG VITE_MAIN_SERVER_URL=/api
+ENV VITE_MAIN_SERVER_URL=$VITE_MAIN_SERVER_URL
 RUN npm run build
 
 FROM nginx:alpine AS run

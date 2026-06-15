@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+docs
+*.log
+# NOTE: .env is intentionally NOT ignored — Vite bakes VITE_* vars at build time.

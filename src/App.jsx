@@ -48,16 +48,21 @@ function App() {
         },
       });
       console.log('res.data: ', res.data);
-      // מציגים הזמנות בליקוט או בהעברה לליקוט (לא "בטיפול" בלבד)
+      // מציגים הזמנות ששולמו וממתינות לליקוט ("Processing"), כאלה שכבר בליקוט ("Likut")
+      // וכן "TransferToLikut" אם קיים. כך הזמנה ששולמה מופיעה אוטומטית בתור הליקוט.
       const allOrders = res?.data?.orders ?? [];
       const forLikut = allOrders.filter((o) => {
         const name = o?.status?.name;
-        return name === "Likut" || (name && /^TransferToLikut$/i.test(name));
+        return (
+          name === "Processing" ||
+          name === "Likut" ||
+          (name && /^TransferToLikut$/i.test(name))
+        );
       });
       setOrders(forLikut);
     } catch (error) {
       // if error is 401 navigate to login
-      if (error.response.status === 401) {
+      if (error?.response?.status === 401) {
         localStorage.removeItem("token");
         localStorage.removeItem("melaketId");
         nav('/login');

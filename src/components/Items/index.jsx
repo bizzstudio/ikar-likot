@@ -152,8 +152,9 @@ export default function Items({ orders, loading, setLoading, go }) {
       })
 
       setShippings((prev) => ({
-        selfCollecting: [],
-        deliver: orders,
+        // איסוף עצמי = הזמנות ללא דמי משלוח; משלוח = כל השאר
+        selfCollecting: orders.filter((o) => o.shippingCost === 0),
+        deliver: orders.filter((o) => o.shippingCost !== 0),
       }));
 
       if (sessionStorage.getItem("shippingStatus")) {

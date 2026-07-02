@@ -642,7 +642,7 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
           ),
           axios.post(
             `${mainApi}/app/orders/send-order-ready-email`,
-            { ...orderReadyPayload, to: "EXECUTIVE@nmplus.co.il" },
+            orderReadyPayload,
             appAuthHeaders
           ),
         ]);

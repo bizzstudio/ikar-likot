@@ -602,7 +602,7 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
       try {
         result = await axios.post(
           `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/send-and-update/${order._id}`,
-          { pickedItems, lionwheelPayload },
+          { pickedItems, lionwheelPayload, numOfBoxes: Number(numOfBoxes) || 1 },
           { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
         );
       } catch (error) {

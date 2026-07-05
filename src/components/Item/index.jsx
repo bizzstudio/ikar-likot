@@ -345,6 +345,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   // ---- הבא: מעבר לפריט הבא ברשימה הקבועה (חץ קדימה) — לא משנה את סדר הרשימה ----
   const goNext = () => {
     if (queue.length < 2) return;
+    setQtyEntry(false); // סוגרים שדה כמות פתוח כדי שלא יחול על פריט אחר
     persistIndex((currentIndex + 1) % queue.length);
     setFeedback(null);
   };
@@ -352,6 +353,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   // ---- קודם: מעבר לפריט הקודם ברשימה הקבועה (חץ אחורה) — לא משנה את סדר הרשימה ----
   const goPrev = () => {
     if (queue.length < 2) return;
+    setQtyEntry(false);
     persistIndex((currentIndex - 1 + queue.length) % queue.length);
     setFeedback(null);
   };
@@ -360,6 +362,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const jumpToItem = (pid) => {
     const idx = queue.indexOf(pid);
     if (idx < 0) return;
+    setQtyEntry(false);
     persistIndex(idx);
     setShowList(false);
   };
@@ -398,7 +401,10 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   };
 
   // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
-  const openShortage = () => setShortageModal(true);
+  const openShortage = () => {
+    setQtyEntry(false); // סוגרים שדה כמות פתוח אם יש
+    setShortageModal(true);
+  };
   const confirmShortage = () => {
     if (!currentPid) return;
     const pid = currentPid;

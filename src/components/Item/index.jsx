@@ -14,11 +14,8 @@ import {
   FaCheckCircle,
   FaBoxOpen,
   FaForward,
-  FaCamera,
   FaListUl,
   FaExclamationTriangle,
-  FaPlus,
-  FaMinus,
 } from "react-icons/fa";
 import spinnerLoadingImage from "/spinner.gif";
 import dayjs from "dayjs";
@@ -69,7 +66,6 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   const [barcodeValue, setBarcodeValue] = useState("");
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
-  const [showCamera, setShowCamera] = useState(false);
   const [showList, setShowList] = useState(false);
   const [shortageModal, setShortageModal] = useState(false);
 
@@ -212,13 +208,13 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       .catch((e) => console.error(e));
   }, []);
 
-  // פוקוס אוטומטי על שדה הברקוד בכל מעבר פריט / סגירת מודל
+  // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    if (!showCamera && !showList && !shortageModal && !allHandled) {
+    if (!showList && !shortageModal && !allHandled) {
       const el = barcodeInputRef.current;
       if (el) setTimeout(() => el.focus(), 60);
     }
-  }, [currentPid, showCamera, showList, shortageModal, allHandled]);
+  }, [currentPid, showList, shortageModal, allHandled]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
   useEffect(() => {
@@ -313,16 +309,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   };
 
   const handleCameraScan = (barcode) => {
-    setShowCamera(false);
     handleBarcode(barcode);
-  };
-
-  // ---- עדכון כמות ידני (מותר תמיד; ברירת המחדל היא סריקה) ----
-  const manualAdjust = (delta) => {
-    if (!currentPid) return;
-    const req = reqOf(currentPid);
-    const next = Math.max(0, Math.min(req, pickedOf(currentPid) + delta)); // חסימת חריגה גם ידנית
-    persistPicked({ ...pickedQuantities, [currentPid]: next });
   };
 
   // ---- דילוג: הפריט הנוכחי יוצג שוב בהמשך ----
@@ -630,58 +617,37 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
               </div>
             )}
 
-            {/* שדה ברקוד בפוקוס אוטומטי */}
+            {/* מצלמה חיה (ברירת מחדל, נפתחת אוטומטית בכל פריט) + שדה לסורק חומרה */}
             <div className="p-4 border-t bg-gray-50">
               <label className="block text-sm font-bold text-gray-700 mb-1">
                 {t("scanFieldLabel")}
               </label>
-              <div className="flex gap-2">
-                <input
-                  ref={barcodeInputRef}
-                  type="text"
-                  autoFocus
-                  value={barcodeValue}
-                  onChange={(e) => setBarcodeValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      submitBarcodeField();
-                    }
-                  }}
-                  dir="ltr"
-                  inputMode="none"
-                  className="flex-1 rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg"
-                  placeholder="7290000000000"
+              <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
+                <BarcodeScanner
+                  onScan={handleCameraScan}
+                  paused={showList || shortageModal}
+                  playSoundOnScan={false}
+                  style={{ height: "100%", width: "100%" }}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowCamera(true)}
-                  className="rounded-lg bg-mainColor px-4 text-white flex items-center"
-                  title={t("scanBarcode")}
-                >
-                  <FaCamera size={20} />
-                </button>
               </div>
-
-              {/* עדכון כמות ידני — מותר תמיד, משני לסריקה */}
-              <div className="mt-3 flex items-center justify-center gap-3">
-                <span className="text-sm text-gray-500">{t("manualQtyUpdate")}:</span>
-                <button
-                  onClick={() => manualAdjust(-1)}
-                  disabled={pickedOf(currentPid) <= 0}
-                  className="w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center disabled:bg-gray-300"
-                >
-                  <FaMinus size={10} />
-                </button>
-                <span className="font-bold text-lg w-6 text-center">{pickedOf(currentPid)}</span>
-                <button
-                  onClick={() => manualAdjust(1)}
-                  disabled={pickedOf(currentPid) >= reqOf(currentPid)}
-                  className="w-8 h-8 rounded-full bg-mainColor text-white flex items-center justify-center disabled:bg-gray-300"
-                >
-                  <FaPlus size={10} />
-                </button>
-              </div>
+              {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
+              <input
+                ref={barcodeInputRef}
+                type="text"
+                autoFocus
+                value={barcodeValue}
+                onChange={(e) => setBarcodeValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitBarcodeField();
+                  }
+                }}
+                dir="ltr"
+                inputMode="none"
+                className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
+                placeholder="7290000000000"
+              />
             </div>
 
             {/* פעולות */}
@@ -723,31 +689,6 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
           )}
         </div>
       </div>
-
-      {/* ---- מודל מצלמה ---- */}
-      {showCamera && (
-        <div
-          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/60 p-4"
-          onClick={(e) => e.target === e.currentTarget && setShowCamera(false)}
-        >
-          <div className="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl">
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="font-bold">{t("scanBarcode")}</h3>
-              <button onClick={() => setShowCamera(false)} className="text-gray-500 text-xl">
-                ×
-              </button>
-            </div>
-            <div className="overflow-hidden rounded-lg bg-gray-100" style={{ height: 240 }}>
-              <BarcodeScanner
-                onScan={handleCameraScan}
-                paused={false}
-                playSoundOnScan={false}
-                style={{ height: "100%", width: "100%" }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ---- מודל אישור בחוסר ---- */}
       {shortageModal && (

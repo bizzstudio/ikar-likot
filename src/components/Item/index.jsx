@@ -64,7 +64,8 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   const [pickedQuantities, setPickedQuantities] = useState({}); // pid -> כמות שנלקטה בפועל
   const [shortageItems, setShortageItems] = useState({}); // pid -> true (סומן בחוסר)
-  const [queue, setQueue] = useState([]); // סדר הפריטים; דילוג מזיז לסוף
+  const [queue, setQueue] = useState([]); // סדר הפריטים — קבוע (ממוין לפי ברקוד), לא משתנה בניווט
+  const [currentIndex, setCurrentIndex] = useState(0); // מצביע לפריט הנוכחי בתוך הרשימה הקבועה
 
   const [barcodeValue, setBarcodeValue] = useState("");
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
@@ -75,6 +76,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
+  const entrySourceRef = useRef("manual"); // "scan" | "manual" — מקור פתיחת שדה הכמות
 
   // ---- שליפת ההזמנה ----
   useEffect(() => {
@@ -112,51 +114,78 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const pickedOf = (pid) => pickedQuantities[pid] || 0;
   const isDone = (pid) => !!shortageItems[pid] || pickedOf(pid) >= reqOf(pid);
 
-  // הפריט הנוכחי = הראשון בתור שעדיין לא הושלם/סומן בחוסר
-  const currentPid = useMemo(
-    () => queue.find((pid) => !isDone(pid)) ?? null,
-    [queue, pickedQuantities, shortageItems, cartByPid]
-  );
+  // הפריט הנוכחי = הפריט במיקום המצביע, בתוך הרשימה הקבועה (queue לא משתנה בניווט)
+  const currentPid =
+    queue.length && currentIndex >= 0 && currentIndex < queue.length
+      ? queue[currentIndex]
+      : null;
   const currentItem = currentPid ? cartByPid[currentPid] : null;
+
+  // מציאת המיקום של הפריט הבא שעדיין לא טופל (למעבר אוטומטי בהשלמה), עם גלישה מסביב.
+  // מקבל doneFn מפורש כדי לעבוד עם ערכי state עדכניים לפני שה-render הבא התרחש.
+  const findNextPendingIdx = (from, doneFn) => {
+    const n = queue.length;
+    if (n === 0) return 0;
+    for (let s = 1; s <= n; s++) {
+      const idx = (from + s) % n;
+      if (!doneFn(queue[idx])) return idx;
+    }
+    return from; // הכל טופל — נשארים במקום
+  };
 
   const allItems = order?.cart || [];
   const doneCount = allItems.filter((it) => isDone(productIdStr(it))).length;
   const totalCount = allItems.length;
   const allHandled = totalCount > 0 && doneCount === totalCount;
 
-  // ---- אתחול תור וכמויות מ-sessionStorage או מהשרת ----
+  // ---- אתחול רשימה קבועה, כמויות ומיקום המצביע (מהשרת או מ-sessionStorage) ----
   useEffect(() => {
     if (!order?.cart) return;
     const id = numberOfOrder.id;
 
-    // סדר תצוגה: לפי ברקוד (יציב), אלא אם נשמר תור קודם
-    const defaultOrder = [...order.cart]
+    // סדר תצוגה קבוע: לפי ברקוד. דטרמיניסטי — נשמר זהה בכל טעינה, ולא משתנה בניווט.
+    const stableOrder = [...order.cart]
       .sort((a, b) => String(a.barcode || "").localeCompare(String(b.barcode || "")))
       .map((it) => productIdStr(it))
       .filter(Boolean);
 
-    // מקור אמת ראשון: התקדמות שנשמרה בשרת (המשך מאותו מצב גם בין מכשירים).
-    // נפילה חזרה ל-sessionStorage המקומי, ואז לברירת מחדל.
+    // מקור אמת ראשון: התקדמות שנשמרה בשרת (המשך מאותו מצב גם בין מכשירים);
+    // נפילה חזרה ל-sessionStorage המקומי.
     const sp = order.likutProgress;
+    let picked, short, boxes, savedIdx;
     if (sp && typeof sp === "object") {
-      setPickedQuantities(sp.pickedQuantities || {});
-      setShortageItems(sp.shortageItems || {});
-      if (sp.numOfBoxes != null) setNumOfBoxes(String(sp.numOfBoxes));
-      setQueue(
-        Array.isArray(sp.queue) && sp.queue.length === defaultOrder.length
-          ? sp.queue
-          : defaultOrder
-      );
+      picked = sp.pickedQuantities || {};
+      short = sp.shortageItems || {};
+      boxes = sp.numOfBoxes;
+      savedIdx = Number.isInteger(sp.currentIndex) ? sp.currentIndex : null;
     } else {
-      const savedQueue = safeParse(sessionStorage.getItem(`queue_${id}`));
-      setQueue(
-        Array.isArray(savedQueue) && savedQueue.length === defaultOrder.length
-          ? savedQueue
-          : defaultOrder
-      );
-      setPickedQuantities(safeParse(sessionStorage.getItem(`pickedQuantities_${id}`)) || {});
-      setShortageItems(safeParse(sessionStorage.getItem(`shortageItems_${id}`)) || {});
+      picked = safeParse(sessionStorage.getItem(`pickedQuantities_${id}`)) || {};
+      short = safeParse(sessionStorage.getItem(`shortageItems_${id}`)) || {};
+      boxes = null;
+      const si = safeParse(sessionStorage.getItem(`currentIndex_${id}`));
+      savedIdx = Number.isInteger(si) ? si : null;
     }
+
+    setPickedQuantities(picked);
+    setShortageItems(short);
+    if (boxes != null) setNumOfBoxes(String(boxes));
+    setQueue(stableOrder);
+
+    // מיקום התחלתי: המשך מהמיקום השמור, אחרת הפריט הראשון שעדיין לא טופל.
+    const reqMap = {};
+    order.cart.forEach((it) => {
+      const pid = productIdStr(it);
+      if (pid) reqMap[pid] = it.quantity || 0;
+    });
+    const doneFn = (pid) => !!short[pid] || (picked[pid] || 0) >= (reqMap[pid] || 0);
+    let startIdx = 0;
+    if (savedIdx != null && savedIdx >= 0 && savedIdx < stableOrder.length) {
+      startIdx = savedIdx;
+    } else {
+      const fp = stableOrder.findIndex((pid) => !doneFn(pid));
+      startIdx = fp >= 0 ? fp : 0;
+    }
+    setCurrentIndex(startIdx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order]);
 
@@ -167,14 +196,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       axios
         .patch(
           `${API}/app/orders/${numberOfOrder.id}/progress`,
-          { progress: { pickedQuantities, shortageItems, queue, numOfBoxes } },
+          { progress: { pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex } },
           { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
         )
         .catch(() => {});
     }, 800);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedQuantities, shortageItems, queue, numOfBoxes]);
+  }, [pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex]);
 
   // הערת לקוח (בעברית כמו שהיא; שאר השפות — הטקסט המקורי, ללא תרגום חיצוני חוסם)
   useEffect(() => {
@@ -237,9 +266,9 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     setShortageItems(next);
     sessionStorage.setItem(`shortageItems_${numberOfOrder.id}`, JSON.stringify(next));
   };
-  const persistQueue = (next) => {
-    setQueue(next);
-    sessionStorage.setItem(`queue_${numberOfOrder.id}`, JSON.stringify(next));
+  const persistIndex = (idx) => {
+    setCurrentIndex(idx);
+    sessionStorage.setItem(`currentIndex_${numberOfOrder.id}`, String(idx));
   };
 
   // ---- תיעוד סריקה (fire-and-forget; לא חוסם אם ה-endpoint עדיין לא קיים) ----
@@ -255,10 +284,6 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     } catch (_) {}
   };
 
-  const flashSuccess = (msg) => {
-    setFeedback({ type: "success", msg });
-    playScanSuccess();
-  };
   const flashError = (msg) => {
     setFeedback({ type: "error", msg });
     playScanError();
@@ -275,22 +300,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     lastScanRef.current = now;
 
     if (!currentItem) return;
-    const pid = currentPid;
-    const req = reqOf(pid);
-    const cur = pickedOf(pid);
+    const cur = pickedOf(currentPid);
 
     const matchesCurrent = itemMatchesBarcode(currentItem, scanned);
     if (matchesCurrent) {
-      if (cur >= req) {
-        // חריגה — חסימה + התראה
-        flashError(t("overQuantityMsg"));
-        logScan("over_quantity", currentItem._id, scanned, cur);
-        return;
-      }
-      const nextVal = cur + 1;
-      persistPicked({ ...pickedQuantities, [pid]: nextVal });
-      flashSuccess(t("scanValidMsg"));
-      logScan("valid", currentItem._id, scanned, nextVal);
+      // סריקה תקינה → אישור קולי, תיעוד, ופתיחת שדה הזנת הכמות (החלטת העסק: כמות לכל מוצר)
+      playScanSuccess();
+      logScan("valid", currentItem._id, scanned, cur);
+      openQtyEntry("scan");
       return;
     }
 
@@ -317,39 +334,38 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     handleBarcode(barcode);
   };
 
-  // ---- דילוג: הפריט הנוכחי יוצג שוב בהמשך (חץ קדימה) ----
-  const skipCurrent = () => {
-    if (!currentPid) return;
-    const rest = queue.filter((p) => p !== currentPid);
-    persistQueue([...rest, currentPid]);
+  // ---- הבא: מעבר לפריט הבא ברשימה הקבועה (חץ קדימה) — לא משנה את סדר הרשימה ----
+  const goNext = () => {
+    if (queue.length < 2) return;
+    persistIndex((currentIndex + 1) % queue.length);
     setFeedback(null);
   };
 
-  // ---- חזרה אחורה: מחזיר לחזית את הפריט שדילגנו עליו לאחרונה (חץ אחורה) ----
-  // הפעולה ההפוכה לדילוג — הפריט האחרון בתור (שנדחף לסוף בדילוג) חוזר להיות הנוכחי.
+  // ---- קודם: מעבר לפריט הקודם ברשימה הקבועה (חץ אחורה) — לא משנה את סדר הרשימה ----
   const goPrev = () => {
     if (queue.length < 2) return;
-    const q = [...queue];
-    const last = q.pop();
-    persistQueue([last, ...q]);
+    persistIndex((currentIndex - 1 + queue.length) % queue.length);
     setFeedback(null);
   };
 
-  // ---- קפיצה לפריט מתוך הרשימה המלאה ----
+  // ---- קפיצה לפריט מתוך הרשימה המלאה — רק מזיז את המצביע, בלי לשנות את סדר הרשימה ----
   const jumpToItem = (pid) => {
-    if (isDone(pid)) return;
-    const rest = queue.filter((p) => p !== pid);
-    persistQueue([pid, ...rest]);
+    const idx = queue.indexOf(pid);
+    if (idx < 0) return;
+    persistIndex(idx);
     setShowList(false);
   };
 
-  // ---- הזנת כמות ידנית מבוקרת (אפיון §4: "כאשר אופי הפריט או תהליך העבודה דורשים") ----
-  // פעולה ברורה ומבוקרת: נפתחת רק בכפתור ייעודי, חורגת מהנדרש נחסמת, ונרשמת לבקרה.
-  const openManual = () => {
+  // ---- הזנת כמות שנלקטה (אפיון §4) ----
+  // נפתחת בכל סריקה תקינה (source="scan") או ידנית מהכפתור (source="manual").
+  // פעולה ברורה ומבוקרת: חריגה מעבר לנדרש נחסמת, וכל הזנה נרשמת לבקרה.
+  const openQtyEntry = (source) => {
     if (!currentPid) return;
+    entrySourceRef.current = source;
     setManualQtyValue(String(pickedOf(currentPid)));
     setManualModal(true);
   };
+  const openManual = () => openQtyEntry("manual");
   const confirmManual = () => {
     if (!currentPid) return;
     const pid = currentPid;
@@ -361,8 +377,20 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       flashError(t("manualQtyOver"));
       return;
     }
-    persistPicked({ ...pickedQuantities, [pid]: val });
-    logScan("manual", currentItem?._id, currentItem?.barcode, val);
+    const nextPicked = { ...pickedQuantities, [pid]: val };
+    persistPicked(nextPicked);
+    // תיעוד: סריקה שהובילה להזנה נרשמת כ-valid, הזנה ישירה מהכפתור כ-manual
+    logScan(
+      entrySourceRef.current === "scan" ? "valid" : "manual",
+      currentItem?._id,
+      currentItem?.barcode,
+      val
+    );
+    // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
+    if (val >= req) {
+      const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
+      persistIndex(findNextPendingIdx(currentIndex, doneFn));
+    }
     setManualModal(false);
     setFeedback(null);
   };
@@ -371,9 +399,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const openShortage = () => setShortageModal(true);
   const confirmShortage = () => {
     if (!currentPid) return;
-    persistShortage({ ...shortageItems, [currentPid]: true });
+    const pid = currentPid;
+    const nextShort = { ...shortageItems, [pid]: true };
+    persistShortage(nextShort);
     // תיעוד: מי (מהטוקן בשרת), מתי, איזה פריט
-    logScan("shortage", currentItem?._id, currentItem?.barcode, pickedOf(currentPid));
+    logScan("shortage", currentItem?._id, currentItem?.barcode, pickedOf(pid));
+    // הפריט טופל (חוסר) → מעבר אוטומטי לפריט הבא שעדיין לא טופל
+    const doneFn = (p) => !!nextShort[p] || pickedOf(p) >= reqOf(p);
+    persistIndex(findNextPendingIdx(currentIndex, doneFn));
     setShortageModal(false);
     setFeedback(null);
   };
@@ -567,7 +600,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
           </span>
           {!allHandled && (
             <span>
-              {t("itemWord")} {Math.min(doneCount + 1, totalCount)} {t("ofWord")} {totalCount}
+              {t("itemWord")} {currentIndex + 1} {t("ofWord")} {totalCount}
             </span>
           )}
         </div>
@@ -705,10 +738,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
                 <FaBackward /> {t("prevItem")}
               </button>
               <button
-                onClick={skipCurrent}
-                className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm"
+                onClick={goNext}
+                disabled={queue.length < 2}
+                className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm disabled:opacity-40"
               >
-                <FaForward /> {t("skipItem")}
+                <FaForward /> {t("nextItem")}
               </button>
               <button
                 onClick={openShortage}
@@ -833,12 +867,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
                 const it = cartByPid[pid];
                 if (!it) return null;
                 const st = statusOf(pid);
+                const isCurrent = pid === currentPid;
                 return (
                   <button
                     key={pid}
                     onClick={() => jumpToItem(pid)}
-                    disabled={isDone(pid)}
-                    className="flex items-center gap-3 rounded-lg border p-2 text-right disabled:opacity-60"
+                    className={`flex items-center gap-3 rounded-lg border p-2 text-right ${
+                      isCurrent ? "border-mainColor border-2 bg-mainColor-light/10" : ""
+                    }`}
                   >
                     <img
                       src={it.image || IMG_PLACEHOLDER}

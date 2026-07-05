@@ -122,12 +122,8 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                         key: item._id,
                         rowBarcode: barcode,
                         rowTitle: productTitle,
-                        name: (
-                            <div>
-                                <div>{productTitle}</div>
-                                <div>₪{item.price || item.originalPrice}</div>
-                            </div>
-                        ),
+                        // מוצג רק שם המוצר — המחיר הוסר מתצוגת המלקט לפי האפיון (§1: מידע תפעולי בלבד)
+                        name: <div>{productTitle}</div>,
                         image: (
                             <img
                                 style={{ width: "60px", height: "60px" }}

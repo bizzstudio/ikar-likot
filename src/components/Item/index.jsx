@@ -212,6 +212,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   // ---- נעילת ההזמנה למלקט ----
   useEffect(() => {
     if (!order) return;
+    // אם ההזמנה כבר בסטטוס Likut ונעולה למלקט הנוכחי — אין צורך לנעול שוב
+    // (קריאה כזו הייתה מחזירה 400 "כבר בליקוט" ורק מייצרת רעש).
+    const ownerId = order.actualMelaket?._id ?? order.actualMelaket;
+    const alreadyMine =
+      order.status?.name === "Likut" &&
+      ownerId &&
+      String(ownerId) === String(localStorage.melaketId);
+    if (alreadyMine) return;
     axios
       .put(`${API}/app/orders/${order._id}`, {}, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },

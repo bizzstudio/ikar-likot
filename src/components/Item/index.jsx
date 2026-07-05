@@ -531,11 +531,24 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       const appAuthHeaders = {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       };
+      // בונים את משימות ההתראה. הודעת ה-WhatsApp ללקוח נשלחת רק אם כתובת שרת
+      // הוואטסאפ מוגדרת (VITE_KIRSHNER_WHATSAPP_SERVER_URL) — אחרת מדלגים עליה
+      // במקום לפנות לכתובת שגויה (שהחזירה 405) ולהקפיץ התראת שגיאה מיותרת.
+      const notifyTasks = [];
+      if (kirshnerBase) {
+        notifyTasks.push(
+          axios.post(`${kirshnerBase}/send-order-ready`, orderReadyPayload, kirshnerHeaders)
+        );
+      } else {
+        console.warn(
+          "VITE_KIRSHNER_WHATSAPP_SERVER_URL is not configured — skipping customer WhatsApp notification"
+        );
+      }
+      notifyTasks.push(
+        axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders)
+      );
       try {
-        const settled = await Promise.allSettled([
-          axios.post(`${kirshnerBase}/send-order-ready`, orderReadyPayload, kirshnerHeaders),
-          axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders),
-        ]);
+        const settled = await Promise.allSettled(notifyTasks);
         const failed = settled.filter((r) => r.status === "rejected");
         if (failed.length) {
           console.error("order-ready notifications:", failed.map((r) => r.reason));

@@ -220,11 +220,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       .catch((err) => {
         if (order.actualMelaket?._id !== localStorage.melaketId) {
           alert(t("alreadyTaken"));
-          nav("../items");
+          nav("/items");
           window.location.reload();
         } else if (err.response?.status === 409) {
           alert(err.response.data?.message?.[language] || err.response.data?.message || "");
-          nav("../items");
+          nav("/items");
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -450,7 +450,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
       if (isOrderAlreadyTaken) {
         alert(t("alreadyDone"));
-        nav("../items");
+        nav("/items");
         window.location.reload();
         return;
       }
@@ -546,9 +546,9 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
         alert(t("errorSendingMessage"));
       }
 
-      nav("../items");
       setUpdateOrders((prev) => !prev);
       setOrders();
+      nav("/items"); // חזרה לרשימת כל ההזמנות אחרי סיום מוצלח
     } finally {
       setSubmiting(false);
     }

@@ -71,12 +71,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
   const [showList, setShowList] = useState(false);
   const [shortageModal, setShortageModal] = useState(false);
-  const [manualModal, setManualModal] = useState(false); // הזנת כמות ידנית מבוקרת
-  const [manualQtyValue, setManualQtyValue] = useState("");
+  const [qtyEntry, setQtyEntry] = useState(false); // שדה הזנת כמות אינליין פעיל
+  const [qtyValue, setQtyValue] = useState("");
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
-  const entrySourceRef = useRef("manual"); // "scan" | "manual" — מקור פתיחת שדה הכמות
 
   // ---- שליפת ההזמנה ----
   useEffect(() => {
@@ -243,11 +242,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    if (!showList && !shortageModal && !manualModal && !allHandled) {
+    if (!showList && !shortageModal && !qtyEntry && !allHandled) {
       const el = barcodeInputRef.current;
       if (el) setTimeout(() => el.focus(), 60);
     }
-  }, [currentPid, showList, shortageModal, manualModal, allHandled]);
+  }, [currentPid, showList, shortageModal, qtyEntry, allHandled]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
   useEffect(() => {
@@ -291,7 +290,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
   const handleBarcode = (raw) => {
-    if (manualModal || shortageModal) return; // אין קליטת סריקה בזמן מודל פתוח
+    if (qtyEntry || shortageModal) return; // אין קליטת סריקה בזמן הזנת כמות/מודל
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
     // מניעת קליטה כפולה מהירה
@@ -304,10 +303,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
     const matchesCurrent = itemMatchesBarcode(currentItem, scanned);
     if (matchesCurrent) {
-      // סריקה תקינה → אישור קולי, תיעוד, ופתיחת שדה הזנת הכמות (החלטת העסק: כמות לכל מוצר)
+      // סריקה תקינה → אישור קולי, תיעוד, ופתיחת שדה כמות אינליין (לא חלון קופץ)
       playScanSuccess();
       logScan("valid", currentItem._id, scanned, cur);
-      openQtyEntry("scan");
+      setQtyValue("");
+      setQtyEntry(true);
       return;
     }
 
@@ -356,42 +356,36 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     setShowList(false);
   };
 
-  // ---- הזנת כמות שנלקטה (אפיון §4) ----
-  // נפתחת בכל סריקה תקינה (source="scan") או ידנית מהכפתור (source="manual").
-  // פעולה ברורה ומבוקרת: חריגה מעבר לנדרש נחסמת, וכל הזנה נרשמת לבקרה.
-  const openQtyEntry = (source) => {
+  // ---- הזנת כמות אינליין (אפיון §4) ----
+  // נפתחת בסריקה תקינה (שדה ריק) או ידנית מהכפתור (למוצר ללא ברקוד). לא חלון קופץ.
+  const openManual = () => {
     if (!currentPid) return;
-    entrySourceRef.current = source;
-    setManualQtyValue(String(pickedOf(currentPid)));
-    setManualModal(true);
+    setQtyValue(String(pickedOf(currentPid)));
+    setQtyEntry(true);
   };
-  const openManual = () => openQtyEntry("manual");
-  const confirmManual = () => {
+  const confirmQty = () => {
     if (!currentPid) return;
     const pid = currentPid;
     const req = reqOf(pid);
-    const val = parseInt(manualQtyValue, 10);
-    if (!Number.isFinite(val) || val < 0) return;
-    // חריגה מעבר לנדרש נחסמת (מצב קצה — כמו בסריקה)
+    const val = parseInt(qtyValue, 10);
+    if (!Number.isFinite(val) || val < 0) {
+      setQtyEntry(false); // ריק/לא תקין → ביטול בלי שינוי
+      return;
+    }
+    // חריגה מעבר לנדרש נחסמת (מצב קצה)
     if (val > req) {
       flashError(t("manualQtyOver"));
       return;
     }
     const nextPicked = { ...pickedQuantities, [pid]: val };
     persistPicked(nextPicked);
-    // תיעוד: סריקה שהובילה להזנה נרשמת כ-valid, הזנה ישירה מהכפתור כ-manual
-    logScan(
-      entrySourceRef.current === "scan" ? "valid" : "manual",
-      currentItem?._id,
-      currentItem?.barcode,
-      val
-    );
+    logScan("manual", currentItem?._id, currentItem?.barcode, val);
     // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
     if (val >= req) {
       const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
       persistIndex(findNextPendingIdx(currentIndex, doneFn));
     }
-    setManualModal(false);
+    setQtyEntry(false);
     setFeedback(null);
   };
 
@@ -695,38 +689,78 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
               </div>
             )}
 
-            {/* מצלמה חיה (ברירת מחדל, נפתחת אוטומטית בכל פריט) + שדה לסורק חומרה */}
-            <div className="p-4 border-t bg-gray-50">
-              <label className="block text-sm font-bold text-gray-700 mb-1">
-                {t("scanFieldLabel")}
-              </label>
-              <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
-                <BarcodeScanner
-                  onScan={handleCameraScan}
-                  paused={showList || shortageModal || manualModal}
-                  playSoundOnScan={false}
-                  style={{ height: "100%", width: "100%" }}
+            {qtyEntry ? (
+              /* ---- הזנת כמות אינליין (אחרי סריקה / ידני) — לא חלון קופץ ---- */
+              <div className="p-4 border-t bg-mainColor-light/10">
+                <label className="block text-sm font-bold text-gray-700 mb-1">
+                  {t("pickedQty")} — {t("requiredQty")}: {reqOf(currentPid)}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={reqOf(currentPid)}
+                    autoFocus
+                    value={qtyValue}
+                    onChange={(e) => setQtyValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        confirmQty();
+                      }
+                    }}
+                    dir="ltr"
+                    className="flex-1 rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
+                    placeholder="0"
+                  />
+                  <button
+                    onClick={confirmQty}
+                    className="rounded-lg bg-mainColor px-5 text-white font-bold"
+                  >
+                    {t("approve")}
+                  </button>
+                  <button
+                    onClick={() => setQtyEntry(false)}
+                    className="rounded-lg border border-gray-300 px-4 text-gray-700"
+                  >
+                    {t("close")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* מצלמה חיה (ברירת מחדל, נפתחת אוטומטית בכל פריט) + שדה לסורק חומרה */
+              <div className="p-4 border-t bg-gray-50">
+                <label className="block text-sm font-bold text-gray-700 mb-1">
+                  {t("scanFieldLabel")}
+                </label>
+                <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
+                  <BarcodeScanner
+                    onScan={handleCameraScan}
+                    paused={showList || shortageModal || qtyEntry}
+                    playSoundOnScan={false}
+                    style={{ height: "100%", width: "100%" }}
+                  />
+                </div>
+                {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
+                <input
+                  ref={barcodeInputRef}
+                  type="text"
+                  autoFocus
+                  value={barcodeValue}
+                  onChange={(e) => setBarcodeValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitBarcodeField();
+                    }
+                  }}
+                  dir="ltr"
+                  inputMode="none"
+                  className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
+                  placeholder="7290000000000"
                 />
               </div>
-              {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
-              <input
-                ref={barcodeInputRef}
-                type="text"
-                autoFocus
-                value={barcodeValue}
-                onChange={(e) => setBarcodeValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitBarcodeField();
-                  }
-                }}
-                dir="ltr"
-                inputMode="none"
-                className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
-                placeholder="7290000000000"
-              />
-            </div>
+            )}
 
             {/* פעולות */}
             <div className="grid grid-cols-4 gap-px bg-gray-200 border-t">
@@ -795,52 +829,6 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
               <button
                 onClick={confirmShortage}
                 className="rounded-lg bg-orange-500 px-4 py-2 text-white"
-              >
-                {t("approve")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---- מודל הזנת כמות ידנית מבוקרת (§4) ---- */}
-      {manualModal && currentItem && (
-        <div
-          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 p-4"
-          dir={language === "hebrew" ? "rtl" : "ltr"}
-        >
-          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
-            <h3 className="text-lg font-bold text-gray-900 mb-1">{t("manualQtyTitle")}</h3>
-            <p className="text-sm text-gray-600 mb-2">{t("manualQtyPrompt")}</p>
-            <p className="text-sm text-gray-700 mb-3 font-medium">
-              {itemName(currentItem)} — {t("requiredQty")}: <b>{reqOf(currentPid)}</b>
-            </p>
-            <input
-              type="number"
-              min={0}
-              max={reqOf(currentPid)}
-              value={manualQtyValue}
-              onChange={(e) => setManualQtyValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  confirmManual();
-                }
-              }}
-              autoFocus
-              dir="ltr"
-              className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center mb-4"
-            />
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setManualModal(false)}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700"
-              >
-                {t("close")}
-              </button>
-              <button
-                onClick={confirmManual}
-                className="rounded-lg bg-mainColor px-4 py-2 text-white"
               >
                 {t("approve")}
               </button>

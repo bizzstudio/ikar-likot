@@ -50,8 +50,8 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
     const translateText = async (text) => {
         try {
             let langpair = "";
-            if (language === "india") {
-                langpair = "he|hi";
+            if (language === "thai") {
+                langpair = "he|th";
             } else if (language === "en") {
                 langpair = "he|en";
             }

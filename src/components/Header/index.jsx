@@ -140,10 +140,10 @@ export default function Header({ id, go, setLoading, loading, orders = [] }) {
       }
     },
     {
-      label: <span className="flex items-center gap-2 justify-start"><IoLanguage size={20} />हिंदी</span>,
+      label: <span className="flex items-center gap-2 justify-start"><IoLanguage size={20} />ไทย</span>,
       onClick: () => {
-        setLanguage("india");
-        localStorage.setItem("language", "india");
+        setLanguage("thai");
+        localStorage.setItem("language", "thai");
       }
     },
     {

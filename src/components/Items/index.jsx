@@ -114,14 +114,8 @@ export default function Items({ orders, loading, setLoading, go }) {
       dataIndex: "number",
       // render: (text) => text.slice(-7), // להציג רק את 7 התווים האחרונים
     },
-    {
-      title: getWord("total"),
-      dataIndex: "total",
-    },
-    {
-      title: getWord('quantity'),
-      dataIndex: "collected",
-    },
+    // עמודות סכום וכמות הוסרו מתצוגת המלקט לפי האפיון —
+    // המלקט צריך רק מידע תפעולי: כתובת, מספר הזמנה, שעה.
     {
       title: getWord('createAt'),
       dataIndex: "createAt",

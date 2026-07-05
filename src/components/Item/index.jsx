@@ -1,500 +1,359 @@
 // meshek_Likut_system/src/components/Item/index.jsx
-import React, { useContext, useEffect, useState } from "react";
+// מסך ליקוט מונחה פריט-אחר-פריט (אפיון "אפיון שינויים לתהליך ליקוט").
+// עקרונות: מוצג פריט אחד בכל פעם, שדה ברקוד בפוקוס אוטומטי, כל סריקה תקינה +1,
+// חריגה מעל הכמות נחסמת, אפשר לדלג (הפריט חוזר בהמשך), ובאישור מיוחד לסמן בחוסר.
+// שדה מספר הארגזים מוצג רק במסך הסיום. לוגיקת ה-handleDone נשמרה 1:1 מהגרסה הקודמת.
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Select, Table } from "antd";
-import Loader from "../Loader";
 import axios from "axios";
-import logo from "../../../public/logo.jpeg";
 import { languageContext } from "../../App";
 import "./style.css";
-import { getWord, getWordString } from "../Language";
+import { getWordString } from "../Language";
 import BarcodeScanner from "../BarcodeScanner";
-import { FaCheckCircle, FaBoxOpen, FaPlus, FaMinus, FaCheck, FaBarcode, FaCamera } from "react-icons/fa";
-import { FaXmark } from "react-icons/fa6";
+import {
+  FaCheckCircle,
+  FaBoxOpen,
+  FaForward,
+  FaCamera,
+  FaListUl,
+  FaExclamationTriangle,
+  FaPlus,
+  FaMinus,
+} from "react-icons/fa";
 import spinnerLoadingImage from "/spinner.gif";
 import dayjs from "dayjs";
-import loginImg from "/loginImg.svg"
+import loginImg from "/loginImg.svg";
+import { playScanSuccess, playScanError } from "../../utils/soundFeedback";
 
-export default function Item({ setOrders, orders, setUpdateOrders, setId, loading, setLoading }) {
+const API = import.meta.env.VITE_MAIN_SERVER_URL;
+
+// Placeholder ניטרלי לתמונת מוצר חסרה/שבורה (מצבי קצה — "הצגת Placeholder").
+// SVG מוטמע כדי שלא יהיה תלוי ברשת.
+const IMG_PLACEHOLDER =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' fill='#f3f4f6'/><g fill='none' stroke='#9ca3af' stroke-width='3'><circle cx='34' cy='34' r='7'/><path d='M18 72l22-24 14 16 10-10 14 14'/></g></svg>"
+  );
+
+// נרמול ברקוד להשוואה — עקבי עם lib/normalizeBarcode בבקנד (בלי הסרת אפסים מובילים)
+const normalizeBarcode = (v) =>
+  String(v ?? "").trim().replace(/\s+/g, "").toUpperCase();
+const productIdStr = (item) => (item?._id != null ? String(item._id) : null);
+
+// התאמה מול סט הברקודים של הפריט (ריבוי-ברקודים §6): item.barcodes מגיע מהשרת
+// מועשר; נופלים חזרה לשדה הברקוד הבודד אם הסט חסר.
+const itemMatchesBarcode = (item, scanned) => {
+  if (!item || !scanned) return false;
+  const set = new Set([
+    ...(Array.isArray(item.barcodes) ? item.barcodes.map(normalizeBarcode) : []),
+    ...(item.barcode ? [normalizeBarcode(item.barcode)] : []),
+  ]);
+  return set.has(scanned);
+};
+
+export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const numberOfOrder = useParams();
-
   const { language } = useContext(languageContext);
-
   const nav = useNavigate();
+  const t = (key) => getWordString(language, key);
 
-  const [data, setData] = useState([]);
-  const [cityName, setCityName] = useState();
   const [order, setOrder] = useState();
   const [statuses, setStatuses] = useState([]);
   const [userText, setUserText] = useState("");
-  const [numOfBoxes, setNumOfBoxes] = useState(0);
-  // const [isLikut, setIsLikut] = useState();
+  const [numOfBoxes, setNumOfBoxes] = useState("");
   const [submiting, setSubmiting] = useState(false);
-  const [pickedQuantities, setPickedQuantities] = useState({});
-  const [markedItems, setMarkedItems] = useState({});
-  const [scanProductModalOpen, setScanProductModalOpen] = useState(false);
-  const [scanProductBarcode, setScanProductBarcode] = useState("");
-  const [scanProductError, setScanProductError] = useState(null);
-  const [showScannerInScanProduct, setShowScannerInScanProduct] = useState(false);
-  const [loadScanProductScanner, setLoadScanProductScanner] = useState(false);
 
-  const numOfBoxesWord = getWord('numOfBoxes');
-  const choseMelaket = getWord('choseMelaket');
-  const pickedAllWord = getWord('pickedAll');
-  const unmarkAllWord = getWord('unmarkAll');
-  const notAllItemsMarked = getWord('notAllItemsMarked');
-  const words = {
-    name: getWord('name'),
-    id: getWord('id'),
-    address: getWord('address'),
-    phone: getWord('phone'),
-    notes: getWord('notes'),
-    floor: getWord('floor'),
-    chooseStatus: getWord('chooseStatus'),
-    are_you_sure: getWord('are_you_sure'),
-    done: getWord('done'),
-    orderNotFound: getWord('orderNotFound')
-  };
+  const [pickedQuantities, setPickedQuantities] = useState({}); // pid -> כמות שנלקטה בפועל
+  const [shortageItems, setShortageItems] = useState({}); // pid -> true (סומן בחוסר)
+  const [queue, setQueue] = useState([]); // סדר הפריטים; דילוג מזיז לסוף
 
-  // console.log('order: ', order)
-  // console.log('orders: ', orders)
+  const [barcodeValue, setBarcodeValue] = useState("");
+  const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
+  const [showCamera, setShowCamera] = useState(false);
+  const [showList, setShowList] = useState(false);
+  const [shortageModal, setShortageModal] = useState(false);
+
+  const barcodeInputRef = useRef(null);
+  const lastScanRef = useRef(0);
+
+  // ---- שליפת ההזמנה ----
   useEffect(() => {
-    // תמיד למשוך את ההזמנה מהשרת כדי לקבל עגלה עם ברקודים (לסריקת מוצר)
     const fetchOrder = async () => {
       try {
-        const response = await axios.get(
-          `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/${numberOfOrder.id}`,
-          {
-            headers: {
-              Authorization: `Bearer ${localStorage.getItem("token")}`,
-            },
-          }
-        );
+        const response = await axios.get(`${API}/app/orders/${numberOfOrder.id}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        });
         setOrder(response.data);
       } catch (error) {
         console.error("Error fetching order:", error);
-        alert(words.orderNotFound.props.children);
+        alert(t("orderNotFound"));
         nav("/items");
       }
     };
     if (numberOfOrder.id) fetchOrder();
-  }, [numberOfOrder.id, nav]);
+  }, [numberOfOrder.id]);
 
-  console.log('order: ', order)
-
-  // פונקציה לשינוי כמות שנלוקטה
-  const updatePickedQuantity = (productId, newQuantity) => {
-    const updatedQuantities = {
-      ...pickedQuantities,
-      [productId]: Math.max(0, newQuantity) // מינימום 0
-    };
-    setPickedQuantities(updatedQuantities);
-
-    // שמירה ב-sessionStorage
-    sessionStorage.setItem(
-      `pickedQuantities_${numberOfOrder.id}`,
-      JSON.stringify(updatedQuantities)
-    );
-  };
-
-  // פונקציה לסימון/ביטול סימון כל הצ'קבוקסים
-  const toggleAllItems = () => {
-    const allItemsMarked = order?.cart?.every((item) => markedItems[item._id != null ? String(item._id) : item._id] === true);
-
-    if (allItemsMarked) {
-      const allUnmarked = {};
-      order.cart.forEach((item) => {
-        const pid = item._id != null ? String(item._id) : item._id;
-        if (pid) allUnmarked[pid] = false;
-      });
-      setMarkedItems(allUnmarked);
-
-      // שמירה ב-sessionStorage
-      sessionStorage.setItem(
-        `markedItems_${numberOfOrder.id}`,
-        JSON.stringify(allUnmarked)
-      );
-    } else {
-      const allMarked = {};
-      order.cart.forEach((item) => {
-        const pid = item._id != null ? String(item._id) : item._id;
-        if (pid) allMarked[pid] = true;
-      });
-      setMarkedItems(allMarked);
-
-      // שמירה ב-sessionStorage
-      sessionStorage.setItem(
-        `markedItems_${numberOfOrder.id}`,
-        JSON.stringify(allMarked)
-      );
-    }
-  };
-
-  // פונקציה לסימון/ביטול סימון מוצר ספציפי
-  const toggleItemMark = (productId) => {
-    const isCurrentlyMarked = markedItems[productId] || false;
-    const updatedMarked = {
-      ...markedItems,
-      [productId]: !isCurrentlyMarked
-    };
-    setMarkedItems(updatedMarked);
-
-    // שמירה ב-sessionStorage
-    sessionStorage.setItem(
-      `markedItems_${numberOfOrder.id}`,
-      JSON.stringify(updatedMarked)
-    );
-  };
-
-  const closeScanProductModal = () => {
-    setScanProductModalOpen(false);
-    setScanProductBarcode("");
-    setScanProductError(null);
-    setShowScannerInScanProduct(false);
-    setLoadScanProductScanner(false);
-    setScanSuccessItem(null);
-    setDeductSubmitting(false);
-  };
-
-  const openScanProductScanner = () => {
-    setShowScannerInScanProduct(true);
-    setLoadScanProductScanner(true);
-  };
-
-  const handleScanProductScan = (barcode) => {
-    if (!barcode?.trim()) return;
-    const trimmed = barcode.trim();
-    setScanProductBarcode(trimmed);
-    setShowScannerInScanProduct(false);
-    applyScannedBarcode(trimmed);
-  };
-
-  const productIdStr = (item) => (item?._id != null ? String(item._id) : null);
-  const normalizeBarcode = (v) => String(v ?? "").trim().replace(/^0+/, "") || "";
-  const [scanSuccessItem, setScanSuccessItem] = useState(null);
-  const [deductSubmitting, setDeductSubmitting] = useState(false);
-
-  const applyScannedBarcode = (barcode) => {
-    const trimmed = normalizeBarcode(barcode);
-    if (!trimmed || !order?.cart) return;
-    const item = order.cart.find((i) => normalizeBarcode(i.barcode) === trimmed);
-    if (!item) {
-      setScanProductError(getWordString(language, "productNotInOrder"));
-      return;
-    }
-    setScanProductError(null);
-    const pid = productIdStr(item);
-    if (!pid) return;
-    const nextQuantities = { ...pickedQuantities, [pid]: item.quantity };
-    setPickedQuantities(nextQuantities);
-    sessionStorage.setItem(`pickedQuantities_${numberOfOrder.id}`, JSON.stringify(nextQuantities));
-    const nextMarked = { ...markedItems, [pid]: true };
-    setMarkedItems(nextMarked);
-    sessionStorage.setItem(`markedItems_${numberOfOrder.id}`, JSON.stringify(nextMarked));
-    setScanSuccessItem({ barcode: trimmed, quantity: item.quantity, title: item.title?.he || item.title?.en });
-  };
-
-  const handleDeductFromStock = async () => {
-    if (!scanSuccessItem?.barcode || !scanSuccessItem?.quantity) return;
-    setDeductSubmitting(true);
-    try {
-      await axios.patch(
-        `${import.meta.env.VITE_MAIN_SERVER_URL}/products/barcode/${encodeURIComponent(scanSuccessItem.barcode)}/deduct-stock-app`,
-        { quantity: scanSuccessItem.quantity },
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
-      );
-      alert(getWordString(language, "stockDeductedSuccess"));
-      closeScanProductModal();
-    } catch (err) {
-      alert(err?.response?.data?.message?.he || err?.response?.data?.message?.en || getWordString(language, "errorUpdateOrder"));
-    } finally {
-      setDeductSubmitting(false);
-    }
-  };
-
-  const columns = [
-    {
-      title: "",
-      dataIndex: "select",
-      align: "center",
-      width: 60,
-      render: (_, record) => {
-        const productId = record.key != null ? String(record.key) : record.key;
-        const isMarked = markedItems[productId] || false;
-
-        return (
-          <div className="flex justify-center">
-            <input
-              type="checkbox"
-              checked={isMarked}
-              onChange={() => toggleItemMark(productId)}
-            />
-          </div>
-        );
-      }
-    },
-    {
-      title: getWord('image'),
-      dataIndex: "image",
-      align: "center",
-    },
-    {
-      title: getWord('name'),
-      dataIndex: "name",
-    },
-    {
-      title: getWord('quantity'),
-      dataIndex: "quantity",
-      render: (originalQuantity, record) => {
-        const productId = record.key != null ? String(record.key) : record.key;
-        const pickedQty = pickedQuantities[productId] !== undefined ? pickedQuantities[productId] : 0;
-
-        return (
-          <div className="flex items-center justify-center gap-3">
-            <button
-              onClick={() => updatePickedQuantity(productId, pickedQty - 1)}
-              className={`w-7 h-7 border-2 border-white text-white rounded-full flex items-center justify-center transition-all duration-300 ${pickedQty <= 0
-                ? 'bg-gray-300 cursor-not-allowed'
-                : 'bg-red-500 hover:brightness-125 active:scale-95'
-                }`}
-              disabled={pickedQty <= 0}
-            >
-              <FaMinus size={9} />
-            </button>
-
-            <div className="text-center">
-              <span className="text-black font-bold text-xl">
-                {pickedQty}
-              </span>
-            </div>
-
-            <button
-              onClick={() => updatePickedQuantity(productId, pickedQty + 1)}
-              className={`w-7 h-7 border-2 border-white text-white rounded-full flex items-center justify-center transition-all duration-300 ${pickedQty >= originalQuantity
-                ? 'bg-gray-300 cursor-not-allowed'
-                : 'bg-mainColor hover:brightness-125 active:scale-95'
-                }`}
-              disabled={pickedQty >= originalQuantity}
-            >
-              <FaPlus size={9} />
-            </button>
-          </div>
-        );
-      }
-    },
-    {
-      title: getWord('scanForPick'),
-      dataIndex: "scan",
-      align: "center",
-      width: 120,
-      render: (_, record) => (
-        <button
-          type="button"
-          title={getWordString(language, "scanForPick") || "סרוק מוצר"}
-          onClick={() => {
-            setScanProductError(null);
-            setScanProductBarcode("");
-            setScanSuccessItem(null);
-            setScanProductModalOpen(true);
-            setShowScannerInScanProduct(true);
-            setLoadScanProductScanner(true);
-          }}
-          className="flex items-center justify-center rounded-lg bg-mainColor p-2 text-white hover:opacity-90 min-w-[44px]"
-        >
-          <FaBarcode size={18} />
-        </button>
-      ),
-    },
-  ];
-
-  const translateText = async (text) => {
-    try {
-      let langpair = "";
-      if (language === "india") {
-        langpair = "he|hi"; // תרגום מעברית להודית
-      } else if (language === "en") {
-        langpair = "he|en"; // תרגום מעברית לאנגלית
-      }
-
-      let response = await axios.get(
-        "https://api.mymemory.translated.net/get",
-        {
-          params: {
-            q: text,
-            langpair: langpair,
-          },
-        }
-      );
-      return (response.data.responseData.translatedText);
-    } catch (error) {
-      console.error("Error translating text:", error);
-    }
-  };
-
-  const getText = async (text) => {
-    if (text) {
-      if (language === "hebrew") setUserText(text);
-      else {
-        const note = await translateText(text);
-        setUserText(note)
-      }
-    }
-  };
-
-  // קבלת שם העיר וההערות על פי השפה
-  useEffect(() => {
-    if (order) {
-      getText(order.customer_note)
-      setCityName(language === 'hebrew' ?
-        order?.user_info?.address?.city?.city_name_he :
-        order?.user_info?.address?.city?.city_name_en
-      )
-    }
-  }, [language, order]);
-
-  // שינוי ההזמנה לסטטוס ליקוט והוצאת המשתמש במידה והיא תפוסה
-  useEffect(() => {
-    if (order) {
-      // setLoading(true);
-      const res = (async () =>
-        await axios.put(
-          `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/${order._id}`, {},
-          {
-            headers: {
-              Authorization: `Bearer ${localStorage.getItem("token")}`,
-            },
-            params: {
-              status: "Likut",
-            },
-          }
-        ))().catch(err => {
-          setLoading(false);
-          if (order.actualMelaket?._id !== localStorage.melaketId) {
-            const msgToAlert = orderAlreadyTaken.props.children;
-            alert(msgToAlert);
-            nav("../items");
-            window.location.reload();
-          } else if (err.response?.status === 409) {
-            alert(err.response.data?.message?.[language] || err.response.data?.message || '');
-            nav("../items");
-          }
-        })
-    }
-  }, [order]);
-
-  const orderAlreadyTaken = getWord("alreadyTaken");
-
-  // קבלת כל הסטטוסים
-  useEffect(() => {
-    const getAllStatuses = async () => {
-      const res = await axios.get(
-        `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/status/getAll`,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
-          },
-        }
-      );
-      setStatuses(res.data);
-    };
-    getAllStatuses();
-  }, []);
-
-  const rowClassName = () => "";
-
-  useEffect(() => {
-    if (order) {
-      getText(order.customer_note);
-      setData(
-        order.cart.sort((a, b) => String(a.barcode || "").localeCompare(String(b.barcode || ""))).map((item) => {
-          const pid = item._id != null ? String(item._id) : item._id;
-          return {
-            key: pid,
-            name: <div>
-              <div>{language === "hebrew" ? item.title.he : item.title.en}</div>
-              <div>₪{item.price || item.originalPrice}</div>
-            </div>,
-            image: (
-              <div className="flex justify-center">
-                <img
-                  src={item.image || logo}
-                  alt={language === "hebrew" ? item.title.he : item.title.en}
-                  className="rounded max-w-full h-12 object-contain"
-                />
-              </div>
-            ),
-            quantity: item.quantity,
-          };
-        })
-      );
-
-      // אתחול כמויות שלוקטו - טעינה מ-sessionStorage או ברירת מחדל
-      const savedQuantities = sessionStorage.getItem(`pickedQuantities_${numberOfOrder.id}`);
-      let initialPickedQuantities = {};
-
-      if (savedQuantities) {
-        try {
-          initialPickedQuantities = JSON.parse(savedQuantities);
-          order.cart.forEach((item) => {
-            const pid = item._id != null ? String(item._id) : item._id;
-            if (pid && initialPickedQuantities[pid] === undefined) initialPickedQuantities[pid] = item.quantity;
-          });
-        } catch (error) {
-          console.error('Error parsing saved quantities:', error);
-          order.cart.forEach((item) => {
-            const pid = item._id != null ? String(item._id) : item._id;
-            if (pid) initialPickedQuantities[pid] = item.quantity;
-          });
-        }
-      } else {
-        order.cart.forEach((item) => {
-          const pid = item._id != null ? String(item._id) : item._id;
-          if (pid) initialPickedQuantities[pid] = item.quantity;
-        });
-      }
-
-      setPickedQuantities(initialPickedQuantities);
-
-      // אתחול צ'קבוקסים - טעינה מ-sessionStorage או ברירת מחדל
-      const savedMarkedItems = sessionStorage.getItem(`markedItems_${numberOfOrder.id}`);
-      let initialMarkedItems = {};
-
-      if (savedMarkedItems) {
-        try {
-          initialMarkedItems = JSON.parse(savedMarkedItems);
-          order.cart.forEach((item) => {
-            const pid = item._id != null ? String(item._id) : item._id;
-            if (pid && initialMarkedItems[pid] === undefined) initialMarkedItems[pid] = false;
-          });
-        } catch (error) {
-          console.error('Error parsing saved marked items:', error);
-          order.cart.forEach((item) => {
-            const pid = item._id != null ? String(item._id) : item._id;
-            if (pid) initialMarkedItems[pid] = false;
-          });
-        }
-      } else {
-        order.cart.forEach((item) => {
-          const pid = item._id != null ? String(item._id) : item._id;
-          if (pid) initialMarkedItems[pid] = false;
-        });
-      }
-
-      setMarkedItems(initialMarkedItems);
-    }
-  }, [order]);
-
-  // הגדרת האי-די של ההזמנה כדי שההדר יוכל להשתמש בו לבטל את הליקוט אם יש צורך
+  // מזהה ההזמנה עבור ההדר (לביטול ליקוט)
   useEffect(() => {
     if (numberOfOrder.id) setId(numberOfOrder.id);
-  }, [numberOfOrder])
+  }, [numberOfOrder.id]);
 
-  const alertMsg = getWord("alreadyDone")
-  const errorUpdateOrder = getWord("errorUpdateOrder");
-  const errorSendingMessage = getWord("errorSendingMessage");
+  // ---- מפות עזר ----
+  const cartByPid = useMemo(() => {
+    const m = {};
+    (order?.cart || []).forEach((it) => {
+      const pid = productIdStr(it);
+      if (pid) m[pid] = it;
+    });
+    return m;
+  }, [order]);
 
+  const reqOf = (pid) => cartByPid[pid]?.quantity || 0;
+  const pickedOf = (pid) => pickedQuantities[pid] || 0;
+  const isDone = (pid) => !!shortageItems[pid] || pickedOf(pid) >= reqOf(pid);
+
+  // הפריט הנוכחי = הראשון בתור שעדיין לא הושלם/סומן בחוסר
+  const currentPid = useMemo(
+    () => queue.find((pid) => !isDone(pid)) ?? null,
+    [queue, pickedQuantities, shortageItems, cartByPid]
+  );
+  const currentItem = currentPid ? cartByPid[currentPid] : null;
+
+  const allItems = order?.cart || [];
+  const doneCount = allItems.filter((it) => isDone(productIdStr(it))).length;
+  const totalCount = allItems.length;
+  const allHandled = totalCount > 0 && doneCount === totalCount;
+
+  // ---- אתחול תור וכמויות מ-sessionStorage או מהשרת ----
+  useEffect(() => {
+    if (!order?.cart) return;
+    const id = numberOfOrder.id;
+
+    // סדר תצוגה: לפי ברקוד (יציב), אלא אם נשמר תור קודם
+    const defaultOrder = [...order.cart]
+      .sort((a, b) => String(a.barcode || "").localeCompare(String(b.barcode || "")))
+      .map((it) => productIdStr(it))
+      .filter(Boolean);
+
+    // מקור אמת ראשון: התקדמות שנשמרה בשרת (המשך מאותו מצב גם בין מכשירים).
+    // נפילה חזרה ל-sessionStorage המקומי, ואז לברירת מחדל.
+    const sp = order.likutProgress;
+    if (sp && typeof sp === "object") {
+      setPickedQuantities(sp.pickedQuantities || {});
+      setShortageItems(sp.shortageItems || {});
+      if (sp.numOfBoxes != null) setNumOfBoxes(String(sp.numOfBoxes));
+      setQueue(
+        Array.isArray(sp.queue) && sp.queue.length === defaultOrder.length
+          ? sp.queue
+          : defaultOrder
+      );
+    } else {
+      const savedQueue = safeParse(sessionStorage.getItem(`queue_${id}`));
+      setQueue(
+        Array.isArray(savedQueue) && savedQueue.length === defaultOrder.length
+          ? savedQueue
+          : defaultOrder
+      );
+      setPickedQuantities(safeParse(sessionStorage.getItem(`pickedQuantities_${id}`)) || {});
+      setShortageItems(safeParse(sessionStorage.getItem(`shortageItems_${id}`)) || {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
+
+  // שמירת התקדמות לשרת (debounced) בכל שינוי — מאפשר המשך מאותו מצב אחרי סגירה/החלפת מכשיר
+  useEffect(() => {
+    if (!order?._id) return;
+    const timer = setTimeout(() => {
+      axios
+        .patch(
+          `${API}/app/orders/${numberOfOrder.id}/progress`,
+          { progress: { pickedQuantities, shortageItems, queue, numOfBoxes } },
+          { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
+        )
+        .catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedQuantities, shortageItems, queue, numOfBoxes]);
+
+  // הערת לקוח (בעברית כמו שהיא; שאר השפות — הטקסט המקורי, ללא תרגום חיצוני חוסם)
+  useEffect(() => {
+    if (order) setUserText(order.customer_note || "");
+  }, [order]);
+
+  // ---- נעילת ההזמנה למלקט ----
+  useEffect(() => {
+    if (!order) return;
+    axios
+      .put(`${API}/app/orders/${order._id}`, {}, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        params: { status: "Likut" },
+      })
+      .catch((err) => {
+        if (order.actualMelaket?._id !== localStorage.melaketId) {
+          alert(t("alreadyTaken"));
+          nav("../items");
+          window.location.reload();
+        } else if (err.response?.status === 409) {
+          alert(err.response.data?.message?.[language] || err.response.data?.message || "");
+          nav("../items");
+        }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
+
+  // ---- כל הסטטוסים (למלקטים) ----
+  useEffect(() => {
+    axios
+      .get(`${API}/app/orders/status/getAll`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      })
+      .then((res) => setStatuses(res.data))
+      .catch((e) => console.error(e));
+  }, []);
+
+  // פוקוס אוטומטי על שדה הברקוד בכל מעבר פריט / סגירת מודל
+  useEffect(() => {
+    if (!showCamera && !showList && !shortageModal && !allHandled) {
+      const el = barcodeInputRef.current;
+      if (el) setTimeout(() => el.focus(), 60);
+    }
+  }, [currentPid, showCamera, showList, shortageModal, allHandled]);
+
+  // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
+  useEffect(() => {
+    if (!feedback) return;
+    const ms = feedback.type === "success" ? 900 : 2000;
+    const timer = setTimeout(() => setFeedback(null), ms);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+
+  // ---- שמירה מתמשכת ----
+  const persistPicked = (next) => {
+    setPickedQuantities(next);
+    sessionStorage.setItem(`pickedQuantities_${numberOfOrder.id}`, JSON.stringify(next));
+  };
+  const persistShortage = (next) => {
+    setShortageItems(next);
+    sessionStorage.setItem(`shortageItems_${numberOfOrder.id}`, JSON.stringify(next));
+  };
+  const persistQueue = (next) => {
+    setQueue(next);
+    sessionStorage.setItem(`queue_${numberOfOrder.id}`, JSON.stringify(next));
+  };
+
+  // ---- תיעוד סריקה (fire-and-forget; לא חוסם אם ה-endpoint עדיין לא קיים) ----
+  const logScan = (result, product, barcode, quantityAfter) => {
+    try {
+      axios
+        .post(
+          `${API}/app/scan-logs`,
+          { order: order?._id, product, barcode, result, quantityAfter },
+          { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
+        )
+        .catch(() => {});
+    } catch (_) {}
+  };
+
+  const flashSuccess = (msg) => {
+    setFeedback({ type: "success", msg });
+    playScanSuccess();
+  };
+  const flashError = (msg) => {
+    setFeedback({ type: "error", msg });
+    playScanError();
+  };
+
+  // ---- טיפול בסריקה מול הפריט הנוכחי ----
+  const handleBarcode = (raw) => {
+    const scanned = normalizeBarcode(raw);
+    if (!scanned) return;
+    // מניעת קליטה כפולה מהירה
+    const now = Date.now();
+    if (now - lastScanRef.current < 400) return;
+    lastScanRef.current = now;
+
+    if (!currentItem) return;
+    const pid = currentPid;
+    const req = reqOf(pid);
+    const cur = pickedOf(pid);
+
+    const matchesCurrent = itemMatchesBarcode(currentItem, scanned);
+    if (matchesCurrent) {
+      if (cur >= req) {
+        // חריגה — חסימה + התראה
+        flashError(t("overQuantityMsg"));
+        logScan("over_quantity", currentItem._id, scanned, cur);
+        return;
+      }
+      const nextVal = cur + 1;
+      persistPicked({ ...pickedQuantities, [pid]: nextVal });
+      flashSuccess(t("scanValidMsg"));
+      logScan("valid", currentItem._id, scanned, nextVal);
+      return;
+    }
+
+    // האם הברקוד שייך לפריט אחר בהזמנה?
+    const other = allItems.find((i) => itemMatchesBarcode(i, scanned));
+    const expectedName = itemName(currentItem); // שם הפריט הצפוי (§3.6)
+    if (other) {
+      const otherName = language === "hebrew" ? other.title?.he : other.title?.en;
+      flashError(`${t("scanWrongItem")}: ${otherName || ""} — ${t("expectedItem")}: ${expectedName}`);
+      logScan("invalid", other._id, scanned, pickedOf(productIdStr(other)));
+    } else {
+      flashError(`${t("productNotInOrder")} — ${t("expectedItem")}: ${expectedName}`);
+      logScan("invalid", null, scanned, null);
+    }
+  };
+
+  const submitBarcodeField = () => {
+    const val = barcodeValue;
+    setBarcodeValue("");
+    handleBarcode(val);
+  };
+
+  const handleCameraScan = (barcode) => {
+    setShowCamera(false);
+    handleBarcode(barcode);
+  };
+
+  // ---- עדכון כמות ידני (מותר תמיד; ברירת המחדל היא סריקה) ----
+  const manualAdjust = (delta) => {
+    if (!currentPid) return;
+    const req = reqOf(currentPid);
+    const next = Math.max(0, Math.min(req, pickedOf(currentPid) + delta)); // חסימת חריגה גם ידנית
+    persistPicked({ ...pickedQuantities, [currentPid]: next });
+  };
+
+  // ---- דילוג: הפריט הנוכחי יוצג שוב בהמשך ----
+  const skipCurrent = () => {
+    if (!currentPid) return;
+    const rest = queue.filter((p) => p !== currentPid);
+    persistQueue([...rest, currentPid]);
+    setFeedback(null);
+  };
+
+  // ---- קפיצה לפריט מתוך הרשימה המלאה ----
+  const jumpToItem = (pid) => {
+    if (isDone(pid)) return;
+    const rest = queue.filter((p) => p !== pid);
+    persistQueue([pid, ...rest]);
+    setShowList(false);
+  };
+
+  // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
+  const openShortage = () => setShortageModal(true);
+  const confirmShortage = () => {
+    if (!currentPid) return;
+    persistShortage({ ...shortageItems, [currentPid]: true });
+    // תיעוד: מי (מהטוקן בשרת), מתי, איזה פריט
+    logScan("shortage", currentItem?._id, currentItem?.barcode, pickedOf(currentPid));
+    setShortageModal(false);
+    setFeedback(null);
+  };
+
+  // ---- סיום הזמנה — הלוגיקה נשמרה 1:1 מהגרסה הקודמת ----
   const handleDone = async () => {
-    // 1) חסימה מיידית אם כבר בתהליך
     if (submiting) return;
 
     const melaketId = localStorage.getItem("melaketId");
@@ -504,26 +363,22 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
       return;
     }
 
-    // בדיקה שכל הצ'קבוקסים מסומנים
-    const allItemsMarked = order?.cart?.every((item) => markedItems[item._id != null ? String(item._id) : item._id] === true);
-    if (!allItemsMarked) {
-      alert(notAllItemsMarked.props.children);
+    // כל הפריטים חייבים להיות מטופלים (הושלמו או סומנו בחוסר מאושר)
+    const allDone = order?.cart?.every((item) => isDone(productIdStr(item)));
+    if (!allDone) {
+      alert(t("notAllItemsMarked"));
       return;
     }
 
-    // confirm לפני שמדליקים submiting כדי לא "לתקוע" את הכפתור אם המשתמש ביטל
-    const confirmed = confirm(words.are_you_sure.props.children);
+    const confirmed = confirm(t("are_you_sure"));
     if (!confirmed) return;
 
-    // 2) עכשיו מתחילים באמת -> נועלים
     setSubmiting(true);
-
     try {
       const fullValue = statuses.find((status) => status._id === melaketId);
 
-      // בדיקה שההזמנה לא נמצאת כבר בסטטוס מלקט אחר
       const isOrderAlreadyTaken = await axios
-        .get(`${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/${order._id}`, {
+        .get(`${API}/app/orders/${order._id}`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
         })
         .then((res) => {
@@ -534,34 +389,27 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
             res.data.status.name !== "Processing" &&
             res.data.status.name !== "Delivered"
           ) {
-            console.log("ההזמנה כבר על שם מלקט אחר!");
             return true;
-          } else {
-            console.log("ההזמנה לא על שם מלקט אחר");
-            return false;
           }
+          return false;
         })
-        .catch((err) => {
-          console.log(err);
-          return true;
-        });
+        .catch(() => true);
 
       if (isOrderAlreadyTaken) {
-        alert(alertMsg.props.children);
+        alert(t("alreadyDone"));
         nav("../items");
         window.location.reload();
         return;
       }
 
-      // בניית pickedItems
+      // בניית pickedItems לפי הכמות שנלקטה בפועל
       const pickedItems = order.cart
         .map((item) => {
-          const pid = item._id != null ? String(item._id) : item._id;
+          const pid = productIdStr(item);
           return { _id: item._id, quantity: pickedQuantities[pid] || 0 };
         })
         .filter((item) => item.quantity > 0);
 
-      // בניית payload ל-LionWheel (אם יש משלוח)
       let lionwheelPayload = null;
       if (order.shippingCost != 0) {
         lionwheelPayload = {
@@ -597,21 +445,19 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
         };
       }
 
-      // שליחה לפונקציה המאוחדת בשרת
       let result;
       try {
         result = await axios.post(
-          `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/send-and-update/${order._id}`,
+          `${API}/app/orders/send-and-update/${order._id}`,
           { pickedItems, lionwheelPayload, numOfBoxes: Number(numOfBoxes) || 1 },
           { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
         );
       } catch (error) {
         console.error("error :>> ", error);
-        alert(errorUpdateOrder.props.children);
+        alert(t("errorUpdateOrder"));
         return;
       }
 
-      // שליחת נתוני ההזמנה לוואטסאפ ולמייל (אותה תבנית; לא מפיל את ה-flow אם נכשל)
       const orderReadyPayload = {
         date: order.createdAt,
         userFirstName: order?.user_info?.name,
@@ -629,207 +475,362 @@ export default function Item({ setOrders, orders, setUpdateOrders, setId, loadin
       const kirshnerHeaders = {
         headers: { "x-api-key": import.meta.env.VITE_KIRSHNER_WHATSAPP_API_KEY },
       };
-      const mainApi = import.meta.env.VITE_MAIN_SERVER_URL;
       const appAuthHeaders = {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       };
       try {
         const settled = await Promise.allSettled([
-          axios.post(
-            `${kirshnerBase}/send-order-ready`,
-            orderReadyPayload,
-            kirshnerHeaders
-          ),
-          axios.post(
-            `${mainApi}/app/orders/send-order-ready-email`,
-            orderReadyPayload,
-            appAuthHeaders
-          ),
+          axios.post(`${kirshnerBase}/send-order-ready`, orderReadyPayload, kirshnerHeaders),
+          axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders),
         ]);
         const failed = settled.filter((r) => r.status === "rejected");
         if (failed.length) {
           console.error("order-ready notifications:", failed.map((r) => r.reason));
-          alert(errorSendingMessage.props.children);
+          alert(t("errorSendingMessage"));
         }
       } catch (error) {
         console.error(error);
-        alert(errorSendingMessage.props.children);
+        alert(t("errorSendingMessage"));
       }
 
-      // סיום
       nav("../items");
       setUpdateOrders((prev) => !prev);
       setOrders();
     } finally {
-      // 3) תמיד משחררים את הכפתור גם אם היה return באמצע או שגיאה
       setSubmiting(false);
     }
   };
 
+  // ---- תצוגה ----
+  const itemName = (it) => (language === "hebrew" ? it?.title?.he : it?.title?.en) || it?.title?.he || "";
+  const statusOf = (pid) => {
+    if (shortageItems[pid]) return { key: "statusShortage", cls: "bg-orange-100 text-orange-700" };
+    const p = pickedOf(pid);
+    const r = reqOf(pid);
+    if (p >= r && r > 0) return { key: "statusDone", cls: "bg-green-100 text-green-700" };
+    if (p > 0) return { key: "statusInProgress", cls: "bg-blue-100 text-blue-700" };
+    return { key: "statusWaiting", cls: "bg-gray-100 text-gray-600" };
+  };
+
+  const header = (
+    <div className="w-full border-b border-gray-200 pb-2 pt-1 px-2 from-mainColor-light/20 to-white bg-gradient-to-b">
+      <img src={loginImg} alt="לוגו האיכר - מערכת ליקוט" className="h-[150px] mx-auto" />
+    </div>
+  );
+
+  if (loading || !order) {
+    return (
+      <div className="orderPage">
+        {header}
+        <div className="flex justify-center p-10">
+          <img src={spinnerLoadingImage} alt="loading" width={40} height={40} />
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="orderPage">
-      {loading ? (
-        <Loader />
-      ) : (
-        <>
-          <div className="w-full border-b border-gray-200 pb-2 pt-1 px-2 from-mainColor-light/20 to-white bg-gradient-to-b">
-            <img src={loginImg} alt="לוגו האיכר - מערכת ליקוט" className="h-[150px] mx-auto" />
-          </div>
-          <div className="flex flex-col gap-4 p-4 pb-0 max-w-[1300px] mx-auto">
-            <div className="flex items-center justify-between gap-4">
-              <label className="relative border-2 border-mainColor rounded-full font-bold text-base py-2 px-3 flex items-center justify-center gap-2 w-1/2 sm:w-auto focus-within:outline-1 focus-within:outline-mainColor transition-all duration-300">
-                <FaBoxOpen className='text-mainColor w-4 min-w-4' />
-                <input
-                  placeholder={numOfBoxesWord.props.children}
-                  type="number"
-                  onChange={(e) => setNumOfBoxes(e.target.value)}
-                  className="border-none outline-none w-full bg-transparent"
-                />
-              </label>
-              <button
-                onClick={handleDone}
-                disabled={
-                  // בדיקה שיש לפחות מוצר אחד שנלוקט עם כמות גדולה מ-0
-                  !Object.values(pickedQuantities).some(qty => qty > 0) ||
-                  numOfBoxes == 0
-                }
-                className='border-none text-white rounded-full font-bold text-base py-2.5 px-4 flex items-center justify-center gap-1.5 bg-mainColor w-1/2 sm:w-auto whitespace-nowrap disabled:opacity-50'>
-                {submiting ? <img
-                  src={spinnerLoadingImage}
-                  alt="Loading"
-                  width={20}
-                  height={20}
-                /> : <FaCheckCircle />}{words.done}
-              </button>
-            </div>
+    <div className="orderPage" dir={language === "hebrew" ? "rtl" : "ltr"}>
+      {header}
 
-            <div className="flex gap-2 justify-center">
-              {(() => {
-                const allItemsMarked = order?.cart?.every((item) => markedItems[item._id != null ? String(item._id) : item._id] === true);
-                return (
-                  <button
-                    onClick={toggleAllItems}
-                    className='border-none text-white rounded-full font-bold text-base py-2.5 px-4 flex items-center justify-center gap-1.5 bg-mainColor sm:flex-grow-0 flex-grow whitespace-nowrap'
-                  >
-                    {allItemsMarked ? <FaXmark size={21} /> : <FaCheck size={16} />}
-                    {allItemsMarked ? unmarkAllWord : pickedAllWord}
-                  </button>
-                );
-              })()}
-            </div>
-          </div>
-          {order ? (
-            <div className="p-4 pb-20 max-w-[1300px] mx-auto">
-              <Table
-                columns={columns}
-                dataSource={data}
-                pagination={false}
-                bordered={true}
-                rowClassName={rowClassName}
-                title={() => (
-                  <div>
-                    <div>
-                      <p>
-                        {words.name}: {order?.user_info?.name} {order?.user_info?.lastName || ''}
-                      </p>
-                      <p> {words.phone}: {order?.user_info?.contact}</p>
-                      <p> {words.id}: {numberOfOrder.id}</p>
-                      <p> {words.address}: {order?.user_info?.address?.city?.city_name_he + ", " + order?.user_info?.address?.street + " " + order?.user_info?.address?.houseNumber + (order?.user_info?.address?.apartmentNumber ? "/" + order?.user_info?.address?.apartmentNumber : '') + (order?.user_info?.address?.floor ? ", " + words.floor.props.children + " " + order?.user_info?.address?.floor : 1)}</p>
-                    </div>
-                    <div>
-                      {words.notes}:<p className="text_red"> {userText}</p>
-                    </div>
-                  </div>
-                )}
-              />
-            </div>
-          ) : (
-            <Loader />
+      <div className="max-w-[700px] mx-auto p-4 pb-24">
+        {/* פס התקדמות */}
+        <div className="flex items-center justify-between mb-3 text-sm font-bold text-gray-700">
+          <span>
+            {t("id")}: {order.invoice}
+          </span>
+          {!allHandled && (
+            <span>
+              {t("itemWord")} {Math.min(doneCount + 1, totalCount)} {t("ofWord")} {totalCount}
+            </span>
           )}
+        </div>
+        <div className="flex gap-2 mb-4">
+          <div className="flex-1 rounded-lg bg-blue-50 text-blue-800 text-center py-2 font-bold">
+            {t("remainingWord")}: {totalCount - doneCount}
+          </div>
+          <div className="flex-1 rounded-lg bg-green-50 text-green-800 text-center py-2 font-bold">
+            {t("pickedWord")}: {doneCount}
+          </div>
+        </div>
 
-          {/* מודל סריקת מוצר – עדכון כמות לפי ההזמנה + הורד ממלאי */}
-          {scanProductModalOpen && (
-            <div className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 p-4" dir="rtl" onClick={(e) => e.target === e.currentTarget && closeScanProductModal()}>
-              <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-bold text-gray-900">{getWordString(language, "scanForPick")}</h3>
-                  <button type="button" onClick={closeScanProductModal} className="text-gray-500 hover:text-gray-700 text-xl leading-none">×</button>
-                </div>
-                {scanSuccessItem ? (
-                  <>
-                    <p className="mb-2 text-sm text-green-700 font-medium">הכמות עודכנה לכמות בהזמנה.</p>
-                    {scanSuccessItem.title && <p className="mb-2 text-sm text-gray-600 truncate">{scanSuccessItem.title}</p>}
-                    <p className="mb-3 text-sm text-gray-500">כמות: {scanSuccessItem.quantity}</p>
-                    <div className="flex gap-2 justify-end">
-                      <button type="button" onClick={closeScanProductModal} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700">{getWordString(language, "close")}</button>
-                      <button
-                        type="button"
-                        onClick={handleDeductFromStock}
-                        disabled={deductSubmitting}
-                        className="rounded-lg bg-mainColor px-4 py-2 text-white disabled:opacity-50"
-                      >
-                        {deductSubmitting ? "..." : getWordString(language, "deductFromStock")}
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <p className="mb-2 text-sm text-gray-600">{getWordString(language, "scanInstructions")}</p>
-                    <div className="mb-3">
-                      <button
-                        type="button"
-                        onClick={openScanProductScanner}
-                        className="w-full flex items-center justify-center rounded-lg bg-mainColor py-3 px-4 text-white hover:opacity-90 mb-2 min-h-[48px]"
-                        title={getWordString(language, "scanBarcode")}
-                      >
-                        <FaCamera size={24} />
-                      </button>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{getWordString(language, "enterBarcode")}</label>
-                      <input
-                        type="text"
-                        value={scanProductBarcode}
-                        onChange={(e) => { setScanProductBarcode(e.target.value); setScanProductError(null); }}
-                        onKeyDown={(e) => { if (e.key === "Enter") applyScannedBarcode(e.target.value); }}
-                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
-                        dir="ltr"
-                        placeholder="7290000048437"
-                      />
-                      {showScannerInScanProduct && (
-                        <div className="mt-2 overflow-hidden rounded-lg bg-gray-100" style={{ height: 200 }}>
-                          {loadScanProductScanner ? (
-                            <BarcodeScanner
-                              onScan={handleScanProductScan}
-                              paused={false}
-                              style={{ height: "100%", width: "100%" }}
-                            />
-                          ) : null}
-                        </div>
-                      )}
-                      {showScannerInScanProduct && (
-                        <button type="button" onClick={() => setShowScannerInScanProduct(false)} className="mt-1 text-sm text-gray-500 hover:text-gray-700">
-                          {getWordString(language, "close")}
-                        </button>
-                      )}
-                    </div>
-                    {scanProductError && <p className="mb-2 text-sm text-red-600">{scanProductError}</p>}
-                    <div className="flex gap-2 justify-end">
-                      <button type="button" onClick={closeScanProductModal} className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700">{getWordString(language, "close")}</button>
-                      <button
-                        type="button"
-                        onClick={() => applyScannedBarcode(scanProductBarcode)}
-                        disabled={!scanProductBarcode?.trim()}
-                        className="rounded-lg bg-mainColor px-4 py-2 text-white disabled:opacity-50"
-                      >
-                        {getWordString(language, "scanProductApply")}
-                      </button>
-                    </div>
-                  </>
-                )}
+        {allHandled ? (
+          /* ---- מסך סיום ---- */
+          <div className="rounded-2xl border-2 border-mainColor p-6 text-center flex flex-col gap-4">
+            <FaCheckCircle className="text-green-500 mx-auto" size={48} />
+            <h2 className="text-xl font-bold text-gray-900">{t("finishOrderTitle")} {order.invoice}</h2>
+            <p className="text-gray-600">{t("allItemsHandled")}</p>
+            <p className="text-gray-700 font-bold">
+              {t("pickedWord")}: {doneCount} {t("ofWord")} {totalCount}
+            </p>
+            <label className="relative border-2 border-mainColor rounded-full font-bold text-base py-2 px-3 flex items-center justify-center gap-2 mx-auto">
+              <FaBoxOpen className="text-mainColor w-4 min-w-4" />
+              <input
+                placeholder={t("numOfBoxes")}
+                type="number"
+                min={1}
+                value={numOfBoxes}
+                onChange={(e) => setNumOfBoxes(e.target.value)}
+                className="border-none outline-none w-32 bg-transparent text-center"
+              />
+            </label>
+            <button
+              onClick={handleDone}
+              disabled={submiting || !numOfBoxes || Number(numOfBoxes) <= 0}
+              className="border-none text-white rounded-full font-bold text-base py-3 px-6 flex items-center justify-center gap-1.5 bg-mainColor mx-auto disabled:opacity-50"
+            >
+              {submiting ? (
+                <img src={spinnerLoadingImage} alt="Loading" width={20} height={20} />
+              ) : (
+                <FaCheckCircle />
+              )}
+              {t("done")}
+            </button>
+            <button onClick={() => setShowList(true)} className="text-mainColor underline text-sm">
+              {t("openItemsList")}
+            </button>
+          </div>
+        ) : currentItem ? (
+          /* ---- כרטיס פריט נוכחי ---- */
+          <div className="rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="flex gap-4 p-4">
+              <img
+                src={currentItem.image || IMG_PLACEHOLDER}
+                onError={(e) => { e.currentTarget.src = IMG_PLACEHOLDER; }}
+                alt={itemName(currentItem)}
+                className="w-28 h-28 rounded-lg object-contain bg-gray-50 border"
+              />
+              <div className="flex-1">
+                <h2 className="text-lg font-bold text-gray-900 leading-tight mb-1">
+                  {itemName(currentItem)}
+                </h2>
+                <p className="text-gray-500 text-sm mb-2">
+                  {currentItem.barcode}
+                </p>
+                <p className="text-gray-700">
+                  {t("requiredQty")}: <b>{reqOf(currentPid)}</b>
+                </p>
+                <p className="text-gray-700">
+                  {t("pickedQty")}: <b className="text-mainColor text-xl">{pickedOf(currentPid)}</b>{" "}
+                  {t("ofWord")} {reqOf(currentPid)}
+                </p>
               </div>
             </div>
+
+            {/* חיווי */}
+            {feedback && (
+              <div
+                className={`px-4 py-3 text-center font-bold ${
+                  feedback.type === "success"
+                    ? "bg-green-100 text-green-800"
+                    : "bg-red-100 text-red-800"
+                }`}
+              >
+                {feedback.msg}
+              </div>
+            )}
+
+            {/* שדה ברקוד בפוקוס אוטומטי */}
+            <div className="p-4 border-t bg-gray-50">
+              <label className="block text-sm font-bold text-gray-700 mb-1">
+                {t("scanFieldLabel")}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  ref={barcodeInputRef}
+                  type="text"
+                  autoFocus
+                  value={barcodeValue}
+                  onChange={(e) => setBarcodeValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitBarcodeField();
+                    }
+                  }}
+                  dir="ltr"
+                  inputMode="none"
+                  className="flex-1 rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg"
+                  placeholder="7290000000000"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCamera(true)}
+                  className="rounded-lg bg-mainColor px-4 text-white flex items-center"
+                  title={t("scanBarcode")}
+                >
+                  <FaCamera size={20} />
+                </button>
+              </div>
+
+              {/* עדכון כמות ידני — מותר תמיד, משני לסריקה */}
+              <div className="mt-3 flex items-center justify-center gap-3">
+                <span className="text-sm text-gray-500">{t("manualQtyUpdate")}:</span>
+                <button
+                  onClick={() => manualAdjust(-1)}
+                  disabled={pickedOf(currentPid) <= 0}
+                  className="w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center disabled:bg-gray-300"
+                >
+                  <FaMinus size={10} />
+                </button>
+                <span className="font-bold text-lg w-6 text-center">{pickedOf(currentPid)}</span>
+                <button
+                  onClick={() => manualAdjust(1)}
+                  disabled={pickedOf(currentPid) >= reqOf(currentPid)}
+                  className="w-8 h-8 rounded-full bg-mainColor text-white flex items-center justify-center disabled:bg-gray-300"
+                >
+                  <FaPlus size={10} />
+                </button>
+              </div>
+            </div>
+
+            {/* פעולות */}
+            <div className="grid grid-cols-3 gap-px bg-gray-200 border-t">
+              <button
+                onClick={skipCurrent}
+                className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm"
+              >
+                <FaForward /> {t("skipItem")}
+              </button>
+              <button
+                onClick={openShortage}
+                className="bg-white py-3 flex flex-col items-center gap-1 text-orange-600 text-sm"
+              >
+                <FaExclamationTriangle /> {t("markShortage")}
+              </button>
+              <button
+                onClick={() => setShowList(true)}
+                className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm"
+              >
+                <FaListUl /> {t("openItemsList")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {/* פרטי לקוח + הערות */}
+        <div className="mt-4 text-sm text-gray-600 leading-6">
+          <p>
+            {t("name")}: {order?.user_info?.name} {order?.user_info?.lastName || ""}
+          </p>
+          <p>
+            {t("phone")}: {order?.user_info?.contact}
+          </p>
+          {userText && (
+            <p>
+              {t("notes")}: <span className="text_red">{userText}</span>
+            </p>
           )}
-        </>
+        </div>
+      </div>
+
+      {/* ---- מודל מצלמה ---- */}
+      {showCamera && (
+        <div
+          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/60 p-4"
+          onClick={(e) => e.target === e.currentTarget && setShowCamera(false)}
+        >
+          <div className="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="font-bold">{t("scanBarcode")}</h3>
+              <button onClick={() => setShowCamera(false)} className="text-gray-500 text-xl">
+                ×
+              </button>
+            </div>
+            <div className="overflow-hidden rounded-lg bg-gray-100" style={{ height: 240 }}>
+              <BarcodeScanner
+                onScan={handleCameraScan}
+                paused={false}
+                playSoundOnScan={false}
+                style={{ height: "100%", width: "100%" }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- מודל אישור בחוסר ---- */}
+      {shortageModal && (
+        <div
+          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 p-4"
+          dir={language === "hebrew" ? "rtl" : "ltr"}
+        >
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">{t("shortageApprovalTitle")}</h3>
+            <p className="text-sm text-gray-600 mb-4">{t("shortageApprovalPrompt")}</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShortageModal(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700"
+              >
+                {t("close")}
+              </button>
+              <button
+                onClick={confirmShortage}
+                className="rounded-lg bg-orange-500 px-4 py-2 text-white"
+              >
+                {t("approve")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- מודל רשימת פריטים מלאה (צפייה + קפיצה, בלי סימון גורף) ---- */}
+      {showList && (
+        <div
+          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => e.target === e.currentTarget && setShowList(false)}
+        >
+          <div className="w-full max-w-md rounded-xl bg-white p-4 shadow-xl max-h-[80vh] overflow-y-auto" dir={language === "hebrew" ? "rtl" : "ltr"}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-bold">{t("itemsListTitle")}</h3>
+              <button onClick={() => setShowList(false)} className="text-gray-500 text-xl">
+                ×
+              </button>
+            </div>
+            <div className="flex flex-col gap-2">
+              {allItems.map((it) => {
+                const pid = productIdStr(it);
+                const st = statusOf(pid);
+                return (
+                  <button
+                    key={pid}
+                    onClick={() => jumpToItem(pid)}
+                    disabled={isDone(pid)}
+                    className="flex items-center gap-3 rounded-lg border p-2 text-right disabled:opacity-60"
+                  >
+                    <img
+                      src={it.image || IMG_PLACEHOLDER}
+                      onError={(e) => { e.currentTarget.src = IMG_PLACEHOLDER; }}
+                      alt={itemName(it)}
+                      className="w-10 h-10 rounded object-contain bg-gray-50"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate text-sm font-medium text-gray-800">{itemName(it)}</div>
+                      <div className="text-xs text-gray-500">
+                        {pickedOf(pid)}/{reqOf(pid)}
+                      </div>
+                    </div>
+                    <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${st.cls}`}>
+                      {t(st.key)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
-};
+}
+
+function safeParse(str) {
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch (_) {
+    return null;
+  }
+}

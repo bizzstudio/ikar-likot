@@ -14,8 +14,10 @@ import {
   FaCheckCircle,
   FaBoxOpen,
   FaForward,
+  FaBackward,
   FaListUl,
   FaExclamationTriangle,
+  FaKeyboard,
 } from "react-icons/fa";
 import spinnerLoadingImage from "/spinner.gif";
 import dayjs from "dayjs";
@@ -68,6 +70,8 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
   const [showList, setShowList] = useState(false);
   const [shortageModal, setShortageModal] = useState(false);
+  const [manualModal, setManualModal] = useState(false); // הזנת כמות ידנית מבוקרת
+  const [manualQtyValue, setManualQtyValue] = useState("");
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
@@ -210,11 +214,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    if (!showList && !shortageModal && !allHandled) {
+    if (!showList && !shortageModal && !manualModal && !allHandled) {
       const el = barcodeInputRef.current;
       if (el) setTimeout(() => el.focus(), 60);
     }
-  }, [currentPid, showList, shortageModal, allHandled]);
+  }, [currentPid, showList, shortageModal, manualModal, allHandled]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
   useEffect(() => {
@@ -262,6 +266,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
   const handleBarcode = (raw) => {
+    if (manualModal || shortageModal) return; // אין קליטת סריקה בזמן מודל פתוח
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
     // מניעת קליטה כפולה מהירה
@@ -312,11 +317,21 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     handleBarcode(barcode);
   };
 
-  // ---- דילוג: הפריט הנוכחי יוצג שוב בהמשך ----
+  // ---- דילוג: הפריט הנוכחי יוצג שוב בהמשך (חץ קדימה) ----
   const skipCurrent = () => {
     if (!currentPid) return;
     const rest = queue.filter((p) => p !== currentPid);
     persistQueue([...rest, currentPid]);
+    setFeedback(null);
+  };
+
+  // ---- חזרה אחורה: מחזיר לחזית את הפריט שדילגנו עליו לאחרונה (חץ אחורה) ----
+  // הפעולה ההפוכה לדילוג — הפריט האחרון בתור (שנדחף לסוף בדילוג) חוזר להיות הנוכחי.
+  const goPrev = () => {
+    if (queue.length < 2) return;
+    const q = [...queue];
+    const last = q.pop();
+    persistQueue([last, ...q]);
     setFeedback(null);
   };
 
@@ -326,6 +341,30 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
     const rest = queue.filter((p) => p !== pid);
     persistQueue([pid, ...rest]);
     setShowList(false);
+  };
+
+  // ---- הזנת כמות ידנית מבוקרת (אפיון §4: "כאשר אופי הפריט או תהליך העבודה דורשים") ----
+  // פעולה ברורה ומבוקרת: נפתחת רק בכפתור ייעודי, חורגת מהנדרש נחסמת, ונרשמת לבקרה.
+  const openManual = () => {
+    if (!currentPid) return;
+    setManualQtyValue(String(pickedOf(currentPid)));
+    setManualModal(true);
+  };
+  const confirmManual = () => {
+    if (!currentPid) return;
+    const pid = currentPid;
+    const req = reqOf(pid);
+    const val = parseInt(manualQtyValue, 10);
+    if (!Number.isFinite(val) || val < 0) return;
+    // חריגה מעבר לנדרש נחסמת (מצב קצה — כמו בסריקה)
+    if (val > req) {
+      flashError(t("manualQtyOver"));
+      return;
+    }
+    persistPicked({ ...pickedQuantities, [pid]: val });
+    logScan("manual", currentItem?._id, currentItem?.barcode, val);
+    setManualModal(false);
+    setFeedback(null);
   };
 
   // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
@@ -601,6 +640,12 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
                   {t("pickedQty")}: <b className="text-mainColor text-xl">{pickedOf(currentPid)}</b>{" "}
                   {t("ofWord")} {reqOf(currentPid)}
                 </p>
+                <button
+                  onClick={openManual}
+                  className="mt-2 inline-flex items-center gap-1 text-sm text-mainColor underline"
+                >
+                  <FaKeyboard /> {t("manualQtyUpdate")}
+                </button>
               </div>
             </div>
 
@@ -625,7 +670,7 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
               <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
                 <BarcodeScanner
                   onScan={handleCameraScan}
-                  paused={showList || shortageModal}
+                  paused={showList || shortageModal || manualModal}
                   playSoundOnScan={false}
                   style={{ height: "100%", width: "100%" }}
                 />
@@ -651,7 +696,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
             </div>
 
             {/* פעולות */}
-            <div className="grid grid-cols-3 gap-px bg-gray-200 border-t">
+            <div className="grid grid-cols-4 gap-px bg-gray-200 border-t">
+              <button
+                onClick={goPrev}
+                disabled={queue.length < 2}
+                className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm disabled:opacity-40"
+              >
+                <FaBackward /> {t("prevItem")}
+              </button>
               <button
                 onClick={skipCurrent}
                 className="bg-white py-3 flex flex-col items-center gap-1 text-gray-700 text-sm"
@@ -717,6 +769,52 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
         </div>
       )}
 
+      {/* ---- מודל הזנת כמות ידנית מבוקרת (§4) ---- */}
+      {manualModal && currentItem && (
+        <div
+          className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 p-4"
+          dir={language === "hebrew" ? "rtl" : "ltr"}
+        >
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-bold text-gray-900 mb-1">{t("manualQtyTitle")}</h3>
+            <p className="text-sm text-gray-600 mb-2">{t("manualQtyPrompt")}</p>
+            <p className="text-sm text-gray-700 mb-3 font-medium">
+              {itemName(currentItem)} — {t("requiredQty")}: <b>{reqOf(currentPid)}</b>
+            </p>
+            <input
+              type="number"
+              min={0}
+              max={reqOf(currentPid)}
+              value={manualQtyValue}
+              onChange={(e) => setManualQtyValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  confirmManual();
+                }
+              }}
+              autoFocus
+              dir="ltr"
+              className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setManualModal(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700"
+              >
+                {t("close")}
+              </button>
+              <button
+                onClick={confirmManual}
+                className="rounded-lg bg-mainColor px-4 py-2 text-white"
+              >
+                {t("approve")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ---- מודל רשימת פריטים מלאה (צפייה + קפיצה, בלי סימון גורף) ---- */}
       {showList && (
         <div
@@ -731,8 +829,9 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
               </button>
             </div>
             <div className="flex flex-col gap-2">
-              {allItems.map((it) => {
-                const pid = productIdStr(it);
+              {queue.map((pid) => {
+                const it = cartByPid[pid];
+                if (!it) return null;
                 const st = statusOf(pid);
                 return (
                   <button

@@ -811,7 +811,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                 <button
                   type="button"
                   onClick={toggleScanner}
-                  className="mt-2 text-xs text-gray-500 underline"
+                  className="mt-2 text-xs font-bold text-gray-500 underline"
                 >
                   {hasScanner ? t("enableCameraScanner") : t("disableCameraScanner")}
                 </button>

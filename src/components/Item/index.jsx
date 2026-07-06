@@ -50,7 +50,7 @@ const itemMatchesBarcode = (item, scanned) => {
   return set.has(scanned);
 };
 
-export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
+export default function Item({ setOrders, setUpdateOrders, setId }) {
   const numberOfOrder = useParams();
   const { language } = useContext(languageContext);
   const nav = useNavigate();
@@ -73,6 +73,19 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   const [shortageModal, setShortageModal] = useState(false);
   const [qtyEntry, setQtyEntry] = useState(false); // שדה הזנת כמות אינליין פעיל
   const [qtyValue, setQtyValue] = useState("");
+
+  // הגדרה פר-מכשיר: האם למכשיר יש סורק חומרה. אם כן — לא מפעילים מצלמה ולא מציגים
+  // preview (חוסך סוללה, שטח מסך ומונע האטה מלולאת עיבוד התמונה של המצלמה).
+  const [hasScanner, setHasScanner] = useState(
+    () => localStorage.getItem("likut_hasScanner") === "1"
+  );
+  const toggleScanner = () => {
+    setHasScanner((prev) => {
+      const next = !prev;
+      localStorage.setItem("likut_hasScanner", next ? "1" : "0");
+      return next;
+    });
+  };
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
@@ -252,9 +265,11 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
   useEffect(() => {
     if (!showList && !shortageModal && !qtyEntry && !allHandled) {
       const el = barcodeInputRef.current;
-      if (el) setTimeout(() => el.focus(), 60);
+      // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
+      // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
+      if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
     }
-  }, [currentPid, showList, shortageModal, qtyEntry, allHandled]);
+  }, [currentPid, showList, shortageModal, qtyEntry, allHandled, hasScanner]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
   useEffect(() => {
@@ -561,17 +576,17 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
       notifyTasks.push(
         axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders)
       );
-      try {
-        const settled = await Promise.allSettled(notifyTasks);
+      // התראות ללקוח (וואטסאפ) ולצוות (מייל) נשלחות ברקע — לא חוסמות את חזרת
+      // המלקט לרשימה, כי סיום ההזמנה כבר בוצע בשרת (send-and-update הצליח). זה
+      // מקצר משמעותית את זמן "סיום ההזמנה". אם שליחה נכשלת עדיין מתריעים כדי
+      // שיעדכנו את הלקוח ידנית (ההתראה תופיע לאחר החזרה לרשימה).
+      Promise.allSettled(notifyTasks).then((settled) => {
         const failed = settled.filter((r) => r.status === "rejected");
         if (failed.length) {
           console.error("order-ready notifications:", failed.map((r) => r.reason));
           alert(t("errorSendingMessage"));
         }
-      } catch (error) {
-        console.error(error);
-        alert(t("errorSendingMessage"));
-      }
+      });
 
       setUpdateOrders((prev) => !prev);
       setOrders();
@@ -594,11 +609,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
 
   const header = (
     <div className="w-full border-b border-gray-200 pb-2 pt-1 px-2 from-mainColor-light/20 to-white bg-gradient-to-b">
-      <img src={loginImg} alt="לוגו האיכר - מערכת ליקוט" className="h-[150px] mx-auto" />
+      <img src={loginImg} alt="לוגו האיכר - מערכת ליקוט" className="h-14 mx-auto" />
     </div>
   );
 
-  if (loading || !order) {
+  // מסך הפריט שולף את ההזמנה שלו בעצמו (fetchOrder) — לכן ההמתנה תלויה רק ב-order
+  // המקומי, ולא ב-loading הגלובלי (שנוקה רק ע"י מסך הרשימה). כך רענון ישיר על
+  // /items/:id לא נתקע בספינר אינסופי.
+  if (!order) {
     return (
       <div className="orderPage">
         {header}
@@ -755,24 +773,27 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
                 </div>
               </div>
             ) : (
-              /* מצלמה חיה (ברירת מחדל, נפתחת אוטומטית בכל פריט) + שדה לסורק חומרה */
+              /* מצב מצלמה (ברירת מחדל) או מצב סורק-חומרה בלבד — נקבע פר-מכשיר */
               <div className="p-4 border-t bg-gray-50">
                 <label className="block text-sm font-bold text-gray-700 mb-1">
-                  {t("scanFieldLabel")}
+                  {hasScanner ? t("scannerModeHardware") : t("scanFieldLabel")}
                 </label>
-                <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
-                  <BarcodeScanner
-                    onScan={handleCameraScan}
-                    paused={showList || shortageModal || qtyEntry}
-                    playSoundOnScan={false}
-                    style={{ height: "100%", width: "100%" }}
-                  />
-                </div>
+                {/* המצלמה נטענת רק כשאין סורק חומרה. כשיש סורק — היא לא מרונדרת כלל,
+                    כך ה-stream נסגר ולולאת עיבוד התמונה לא רצה. */}
+                {!hasScanner && (
+                  <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
+                    <BarcodeScanner
+                      onScan={handleCameraScan}
+                      paused={showList || shortageModal || qtyEntry}
+                      playSoundOnScan={false}
+                      style={{ height: "100%", width: "100%" }}
+                    />
+                  </div>
+                )}
                 {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
                 <input
                   ref={barcodeInputRef}
                   type="text"
-                  autoFocus
                   value={barcodeValue}
                   onChange={(e) => setBarcodeValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -786,6 +807,14 @@ export default function Item({ setOrders, setUpdateOrders, setId, loading }) {
                   className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
                   placeholder="7290000000000"
                 />
+                {/* מתג פר-מכשיר: יש סורק חומרה → כיבוי המצלמה (חיסכון בסוללה/מסך/מהירות) */}
+                <button
+                  type="button"
+                  onClick={toggleScanner}
+                  className="mt-2 text-xs text-gray-500 underline"
+                >
+                  {hasScanner ? t("enableCameraScanner") : t("disableCameraScanner")}
+                </button>
               </div>
             )}
 

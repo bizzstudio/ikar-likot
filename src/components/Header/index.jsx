@@ -128,7 +128,10 @@ export default function Header({ id, go, setLoading, loading, orders = [] }) {
     };
   }, [leaveOrderBtn]);
 
-  if (loading && !location.pathname.startsWith("/forms")) return <></>;
+  // ה-loading הגלובלי מנוקה רק ע"י מסך הרשימה, לכן מסתירים את ההדר בזמן טעינה
+  // רק במסך הרשימה עצמו. במסך פריט/טפסים תמיד מציגים אותו (אחרת רענון ישיר על
+  // /items/:id היה משאיר את ההדר מוסתר לצמיתות).
+  if (loading && location.pathname === "/items") return <></>;
 
   // Create menu options based on current location
   const menuOptions = [

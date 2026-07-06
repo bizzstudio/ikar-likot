@@ -147,6 +147,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   const allItems = order?.cart || [];
   const doneCount = allItems.filter((it) => isDone(productIdStr(it))).length;
+  // "לוקטו" = פריטים שנלקטו בפועל בלבד. פריט שדווח בחוסר טופל אך לא נלקט,
+  // ולכן נספר בנפרד ("בחוסר") ולא מנופח את מונה הליקוט.
+  const shortageCount = allItems.filter((it) => !!shortageItems[productIdStr(it)]).length;
+  const pickedCount = allItems.filter((it) => {
+    const pid = productIdStr(it);
+    return !shortageItems[pid] && pickedOf(pid) >= reqOf(pid) && reqOf(pid) > 0;
+  }).length;
   const totalCount = allItems.length;
   const allHandled = totalCount > 0 && doneCount === totalCount;
 
@@ -648,8 +655,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
             {t("remainingWord")}: {totalCount - doneCount}
           </div>
           <div className="flex-1 rounded-lg bg-green-50 text-green-800 text-center py-2 font-bold">
-            {t("pickedWord")}: {doneCount}
+            {t("pickedWord")}: {pickedCount}
           </div>
+          {shortageCount > 0 && (
+            <div className="flex-1 rounded-lg bg-orange-50 text-orange-700 text-center py-2 font-bold">
+              {t("shortageWord")}: {shortageCount}
+            </div>
+          )}
         </div>
 
         {allHandled ? (
@@ -659,8 +671,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
             <h2 className="text-xl font-bold text-gray-900">{t("finishOrderTitle")} {order.invoice}</h2>
             <p className="text-gray-600">{t("allItemsHandled")}</p>
             <p className="text-gray-700 font-bold">
-              {t("pickedWord")}: {doneCount} {t("ofWord")} {totalCount}
+              {t("pickedWord")}: {pickedCount} {t("ofWord")} {totalCount}
             </p>
+            {shortageCount > 0 && (
+              <p className="text-orange-600 font-bold">
+                {t("shortageWord")}: {shortageCount}
+              </p>
+            )}
             <label className="relative border-2 border-mainColor rounded-full font-bold text-base py-2 px-3 flex items-center justify-center gap-2 mx-auto">
               <FaBoxOpen className="text-mainColor w-4 min-w-4" />
               <input

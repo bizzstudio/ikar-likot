@@ -73,6 +73,8 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const [shortageModal, setShortageModal] = useState(false);
   const [qtyEntry, setQtyEntry] = useState(false); // שדה הזנת כמות אינליין פעיל
   const [qtyValue, setQtyValue] = useState("");
+  // הצעת חוסר חלקי — נדלקת רק אחרי אישור כמות הקטנה מהנדרש: { pid, missing }
+  const [shortagePrompt, setShortagePrompt] = useState(null);
 
   // הגדרה פר-מכשיר: האם למכשיר יש סורק חומרה. אם כן — לא מפעילים מצלמה ולא מציגים
   // preview (חוסך סוללה, שטח מסך ומונע האטה מלולאת עיבוד התמונה של המצלמה).
@@ -270,13 +272,18 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    if (!showList && !shortageModal && !qtyEntry && !allHandled) {
+    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled) {
       const el = barcodeInputRef.current;
       // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
       // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
       if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
     }
-  }, [currentPid, showList, shortageModal, qtyEntry, allHandled, hasScanner]);
+  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner]);
+
+  // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט
+  useEffect(() => {
+    setShortagePrompt(null);
+  }, [currentPid]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
   useEffect(() => {
@@ -320,7 +327,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
   const handleBarcode = (raw) => {
-    if (qtyEntry || shortageModal) return; // אין קליטת סריקה בזמן הזנת כמות/מודל
+    if (qtyEntry || shortageModal || shortagePrompt) return; // אין קליטת סריקה בזמן הזנת כמות/מודל/הצעת חוסר
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
     // מניעת קליטה כפולה מהירה
@@ -413,40 +420,32 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const nextPicked = { ...pickedQuantities, [pid]: val };
     persistPicked(nextPicked);
     logScan("manual", currentItem?._id, currentItem?.barcode, val);
-    // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
-    if (val >= req) {
-      const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
-      persistIndex(findNextPendingIdx(currentIndex, doneFn));
-    }
     setQtyEntry(false);
     setFeedback(null);
+    if (val >= req) {
+      // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
+      const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
+      persistIndex(findNextPendingIdx(currentIndex, doneFn));
+    } else {
+      // כמות חלקית → מציגים הצעה לסמן את היתרה בחוסר (מופיע רק אחרי אישור)
+      setShortagePrompt({ pid, missing: req - val });
+    }
   };
 
   // ---- חוסר חלקי: לוקטה כמות חלקית (למשל 6 מתוך 10) והיתרה חסרה במלאי ----
-  // שומר את הכמות שנלקטה בפועל, מסמן את הפריט בחוסר (כדי שייחשב "מטופל" ותצא
-  // זיכוי על היתרה מהשרת), ועובר לפריט הבא. נפתח מתוך שדה הכמות כשהוזנה כמות < הנדרש.
+  // מופעל מכפתור "סמן בחוסר" בהצעה שנפתחת אחרי אישור כמות חלקית. הכמות שנלקטה
+  // כבר נשמרה ב-confirmQty; כאן מסמנים את הפריט בחוסר (כדי שייחשב "מטופל" ותצא
+  // זיכוי על היתרה מהשרת), מתעדים לבקרה, ועוברים לפריט הבא.
   const confirmPartialShortage = () => {
-    if (!currentPid) return;
-    const pid = currentPid;
-    const req = reqOf(pid);
-    const val = parseInt(qtyValue, 10);
-    if (!Number.isFinite(val) || val < 0) {
-      setQtyEntry(false);
-      return;
-    }
-    if (val > req) {
-      flashError(t("manualQtyOver"));
-      return;
-    }
-    const nextPicked = { ...pickedQuantities, [pid]: val };
+    if (!shortagePrompt) return;
+    const pid = shortagePrompt.pid;
+    const item = cartByPid[pid];
     const nextShort = { ...shortageItems, [pid]: true };
-    persistPicked(nextPicked);
     persistShortage(nextShort);
-    // תיעוד לבקרה: כמה נלקט בפועל, והיתרה בחוסר
-    logScan("shortage", currentItem?._id, currentItem?.barcode, val);
-    const doneFn = (p) => !!nextShort[p] || (nextPicked[p] || 0) >= reqOf(p);
+    logScan("shortage", item?._id, item?.barcode, pickedOf(pid));
+    const doneFn = (p) => !!nextShort[p] || pickedOf(p) >= reqOf(p);
     persistIndex(findNextPendingIdx(currentIndex, doneFn));
-    setQtyEntry(false);
+    setShortagePrompt(null);
     setFeedback(null);
   };
 
@@ -816,22 +815,28 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                     {t("close")}
                   </button>
                 </div>
-                {/* חוסר חלקי: מופיע רק כשהוזנה כמות תקינה הקטנה מהנדרש —
-                    שומר את הכמות שנלקטה ומסמן את היתרה בחוסר, כדי לסגור את הפריט */}
-                {(() => {
-                  const v = parseInt(qtyValue, 10);
-                  const req = reqOf(currentPid);
-                  if (!Number.isFinite(v) || v < 0 || v >= req) return null;
-                  return (
-                    <button
-                      onClick={confirmPartialShortage}
-                      className="mt-2 w-full rounded-lg bg-orange-500 px-4 py-2 text-white font-bold flex items-center justify-center gap-2"
-                    >
-                      <FaExclamationTriangle />
-                      {t("partialShortageBtn")} ({req - v})
-                    </button>
-                  );
-                })()}
+              </div>
+            ) : shortagePrompt && shortagePrompt.pid === currentPid ? (
+              /* ---- אחרי אישור כמות חלקית: הצעה לסמן את היתרה בחוסר ---- */
+              <div className="p-4 border-t bg-orange-50">
+                <div className="flex items-center gap-2 text-orange-700 font-bold mb-3">
+                  <FaExclamationTriangle />
+                  {t("partialShortageMsg").replace("{n}", shortagePrompt.missing)}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={confirmPartialShortage}
+                    className="flex-1 rounded-lg bg-orange-500 px-4 py-3 text-white font-bold flex items-center justify-center gap-2"
+                  >
+                    <FaExclamationTriangle /> {t("markShortage")}
+                  </button>
+                  <button
+                    onClick={() => setShortagePrompt(null)}
+                    className="rounded-lg border border-gray-300 px-4 py-3 text-gray-700"
+                  >
+                    {t("keepPicking")}
+                  </button>
+                </div>
               </div>
             ) : (
               /* מצב מצלמה (ברירת מחדל) או מצב סורק-חומרה בלבד — נקבע פר-מכשיר */

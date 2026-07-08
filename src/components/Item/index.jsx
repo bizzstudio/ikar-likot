@@ -422,6 +422,34 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     setFeedback(null);
   };
 
+  // ---- חוסר חלקי: לוקטה כמות חלקית (למשל 6 מתוך 10) והיתרה חסרה במלאי ----
+  // שומר את הכמות שנלקטה בפועל, מסמן את הפריט בחוסר (כדי שייחשב "מטופל" ותצא
+  // זיכוי על היתרה מהשרת), ועובר לפריט הבא. נפתח מתוך שדה הכמות כשהוזנה כמות < הנדרש.
+  const confirmPartialShortage = () => {
+    if (!currentPid) return;
+    const pid = currentPid;
+    const req = reqOf(pid);
+    const val = parseInt(qtyValue, 10);
+    if (!Number.isFinite(val) || val < 0) {
+      setQtyEntry(false);
+      return;
+    }
+    if (val > req) {
+      flashError(t("manualQtyOver"));
+      return;
+    }
+    const nextPicked = { ...pickedQuantities, [pid]: val };
+    const nextShort = { ...shortageItems, [pid]: true };
+    persistPicked(nextPicked);
+    persistShortage(nextShort);
+    // תיעוד לבקרה: כמה נלקט בפועל, והיתרה בחוסר
+    logScan("shortage", currentItem?._id, currentItem?.barcode, val);
+    const doneFn = (p) => !!nextShort[p] || (nextPicked[p] || 0) >= reqOf(p);
+    persistIndex(findNextPendingIdx(currentIndex, doneFn));
+    setQtyEntry(false);
+    setFeedback(null);
+  };
+
   // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
   const openShortage = () => {
     setQtyEntry(false); // סוגרים שדה כמות פתוח אם יש
@@ -788,6 +816,22 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                     {t("close")}
                   </button>
                 </div>
+                {/* חוסר חלקי: מופיע רק כשהוזנה כמות תקינה הקטנה מהנדרש —
+                    שומר את הכמות שנלקטה ומסמן את היתרה בחוסר, כדי לסגור את הפריט */}
+                {(() => {
+                  const v = parseInt(qtyValue, 10);
+                  const req = reqOf(currentPid);
+                  if (!Number.isFinite(v) || v < 0 || v >= req) return null;
+                  return (
+                    <button
+                      onClick={confirmPartialShortage}
+                      className="mt-2 w-full rounded-lg bg-orange-500 px-4 py-2 text-white font-bold flex items-center justify-center gap-2"
+                    >
+                      <FaExclamationTriangle />
+                      {t("partialShortageBtn")} ({req - v})
+                    </button>
+                  );
+                })()}
               </div>
             ) : (
               /* מצב מצלמה (ברירת מחדל) או מצב סורק-חומרה בלבד — נקבע פר-מכשיר */

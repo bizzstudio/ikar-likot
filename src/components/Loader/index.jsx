@@ -9,7 +9,7 @@ export default function Loader() {
   const { text } = useLoadingStore();
 
   const translatedText = getWord(text);
-  const loading = translatedText.props.children || 'Loading';
+  const loading = translatedText.props.children || 'טוען';
 
   return (
     <div className="loader-container">

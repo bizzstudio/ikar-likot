@@ -8,11 +8,27 @@ import PrivateRoute from "./components/PrivateRoute";
 import Items from "./components/Items";
 import Item from "./components/Item";
 import Header from "./components/Header";
-import FormT01 from "./components/forms/FormT01";
-import FormT03 from "./components/forms/FormT03";
-import FormT02 from "./components/forms/FormT02";
 
 export const languageContext = createContext()
+
+// Interceptor גלובלי אחד לכל בקשות הצוות (כולם משתמשים ב-axios ברירת המחדל):
+// טוקן מלקט פג אחרי 7 ימים בבקנד → בכל 401 מנקים את הטוקן ומחזירים למסך התחברות
+// כדי שהמלקט יתחבר מחדש במקום לראות רשימות ריקות/שגיאות שקטות. נרשם פעם אחת ברמת
+// המודול כדי שלא ישוכפל בכל render.
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("melaketId");
+      if (!window.location.pathname.includes("/login")) {
+        window.location.href = "/login";
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 function App() {
   const [orders, setOrders] = useState();
   const [updateOrders, setUpdateOrders] = useState(false);
@@ -89,8 +105,7 @@ function App() {
 
   return (
     <languageContext.Provider value={{ language, setLanguage }}>
-      {(location.pathname.includes("items") ||
-        location.pathname.startsWith("/forms")) && (
+      {location.pathname.includes("items") && (
         <Header id={id} go={go} loading={loading} setLoading={setLoading} orders={orders} />
       )}
       <main className="main">
@@ -116,30 +131,6 @@ function App() {
                   loading={loading}
                   setLoading={setLoading}
                 />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/forms/t01"
-            element={
-              <PrivateRoute>
-                <FormT01 />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/forms/t03"
-            element={
-              <PrivateRoute>
-                <FormT03 />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/forms/t02"
-            element={
-              <PrivateRoute>
-                <FormT02 />
               </PrivateRoute>
             }
           />

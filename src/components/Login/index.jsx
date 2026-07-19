@@ -23,7 +23,12 @@ function Login() {
             localStorage.setItem("melaketId", res.data.melaketId);
             navigate("/items");
         } catch (err) {
-            setError(err?.response?.data || "Login failed, please try again.");
+            setError(
+                err?.response?.data?.message ||
+                (typeof err?.response?.data === "string" ? err.response.data : null) ||
+                err?.message ||
+                "שגיאה"
+            );
         }
     };
 

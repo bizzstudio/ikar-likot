@@ -5,7 +5,7 @@ import { json, useNavigate } from "react-router-dom";
 import Loader from "../Loader";
 import { languageContext } from "../../App";
 import "./style.css";
-import { getWord } from "../Language";
+import { getWord, getWordString } from "../Language";
 import axios from "axios";
 import TabSwitcher from "../TabSwitcher";
 import loginImg from "/loginImg.svg"
@@ -23,7 +23,7 @@ export default function Items({ orders, loading, setLoading, go }) {
   const nav = useNavigate();
 
   const [data, setData] = useState([]);
-  const [cityNames, setCityNames] = useState(true);
+  const [cityNames, setCityNames] = useState({});
   const [shippingStatus, setShippingStatus] = useState();
   const [shippings, setShippings] = useState({
     selfCollecting: [],
@@ -61,7 +61,6 @@ export default function Items({ orders, loading, setLoading, go }) {
 
   const shipment = getWord('shipment')?.props?.children;
   const selfCollected = getWord('selfCollected')?.props?.children;
-  const orderIsCollected = getWord('orderIsCollected')?.props?.children;
   const floorWord = getWord('floor')?.props?.children;
 
   const rowClassName = (record, index) => {
@@ -182,7 +181,7 @@ export default function Items({ orders, loading, setLoading, go }) {
               actualMelaket: item.actualMelaket,
             };
           })
-          .sort((a, b) => a.number - b.number)
+          .sort((a, b) => String(a.number).localeCompare(String(b.number)))
       );
     }
   }, [shippingStatus, cityNames]);
@@ -192,7 +191,7 @@ export default function Items({ orders, loading, setLoading, go }) {
   );
 
   const handleRowClick = (record, rowIndex) => {
-    const orderData = orders.find(o => o.invoice === record.number);
+    const orderData = orders.find(o => String(o.invoice) === String(record.number));
     setPreviewOrder(orderData);
     setIsPreviewOpen(true);
   };
@@ -211,7 +210,7 @@ export default function Items({ orders, loading, setLoading, go }) {
       } else {
         const m = previewOrder.actualMelaket;
         const melaketName = (language === 'hebrew' ? (m?.heName || m?.name) : (m?.name || m?.heName)) || 'מלקט אחר';
-        alert(`${orderIsCollected} ${melaketName}`);
+        alert(`${getWordString(language, 'orderIsCollected')} ${melaketName}`);
       }
     }
     handleClosePreview();
@@ -280,7 +279,7 @@ export default function Items({ orders, loading, setLoading, go }) {
                   } else {
                     const m = record.actualMelaket;
                     const melaketName = (language === 'hebrew' ? (m?.heName || m?.name) : (m?.name || m?.heName)) || 'מלקט אחר';
-                    alert(`${orderIsCollected} ${melaketName}`);
+                    alert(`${getWordString(language, 'orderIsCollected')} ${melaketName}`);
                   }
                 },
                 ...onRowStyle(record, rowIndex)

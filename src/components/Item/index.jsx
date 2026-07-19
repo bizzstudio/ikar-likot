@@ -91,6 +91,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
+  // סימון שההזמנה כבר הושלמה (handleDone) — מונע מ-PATCH ההתקדמות ה-debounced
+  // לרוץ אחרי הניווט ולהחיות מצב ישן. מחזיק גם את מזהה ה-timer לביטול מיידי.
+  const completedRef = useRef(false);
+  const progressTimerRef = useRef(null);
 
   // ---- שליפת ההזמנה ----
   useEffect(() => {
@@ -213,7 +217,9 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // שמירת התקדמות לשרת (debounced) בכל שינוי — מאפשר המשך מאותו מצב אחרי סגירה/החלפת מכשיר
   useEffect(() => {
     if (!order?._id) return;
+    if (completedRef.current) return; // ההזמנה כבר הושלמה — לא לשמור מצב ישן
     const timer = setTimeout(() => {
+      if (completedRef.current) return; // נבדק שוב ברגע הירי — למקרה שהושלמה בינתיים
       axios
         .patch(
           `${API}/app/orders/${numberOfOrder.id}/progress`,
@@ -222,6 +228,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         )
         .catch(() => {});
     }, 800);
+    progressTimerRef.current = timer;
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex]);
@@ -489,6 +496,11 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const confirmed = confirm(t("are_you_sure"));
     if (!confirmed) return;
 
+    // מרגע האישור ההזמנה נסגרת — חוסמים כל PATCH התקדמות עתידי (כולל אחד שכבר
+    // ממתין ב-debounce) כדי שלא יחיה מצב ישן אחרי הניווט חזרה לרשימה.
+    completedRef.current = true;
+    if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+
     setSubmiting(true);
     try {
       const fullValue = statuses.find((status) => status._id === melaketId);
@@ -498,12 +510,14 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
         })
         .then((res) => {
+          // "כבר הושלמה" = כל סטטוס שאינו אחד משלבי הביניים. מאז שסיום הליקוט
+          // מעביר ל-"הזמנה הושלמה" (Delivered), גם Delivered נחשב כמושלם — ולכן
+          // הוסר מרשימת שלבי הביניים כאן (אחרת לא היינו מזהים הזמנה שכבר הושלמה).
           if (
             res.data.status.name !== "Cancel" &&
             res.data.status.name !== "Pending" &&
             res.data.status.name !== "Likut" &&
-            res.data.status.name !== "Processing" &&
-            res.data.status.name !== "Delivered"
+            res.data.status.name !== "Processing"
           ) {
             return true;
           }
@@ -555,8 +569,8 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
             : "",
           destination_recipient_name: `${order?.user_info?.name} ${order?.user_info?.lastName || ""}`,
           destination_phone: order?.user_info?.contact,
-          line_items: [{ name: "ארגזים", quantity: numOfBoxes }],
-          packages_quantity: numOfBoxes,
+          line_items: [{ name: "ארגזים", quantity: Number(numOfBoxes) }],
+          packages_quantity: Number(numOfBoxes),
           money_collect: 0,
         };
       }

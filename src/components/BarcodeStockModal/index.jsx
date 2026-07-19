@@ -85,6 +85,14 @@ export default function BarcodeStockModal({ isOpen, onClose, onSuccess, entryMod
     }
   }, [isOpen]);
 
+  // ניקוי בטוח בהסרת הרכיב: עוצר את המצלמה ללא תנאי כדי שנורית המצלמה לא תישאר
+  // דולקת אם המודל הוסר מה-DOM בזמן שהמצלמה פתוחה.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks?.().forEach((t) => t.stop());
+    };
+  }, []);
+
   const token = localStorage.getItem("token");
 
   const fetchProductByBarcode = async (barcode) => {

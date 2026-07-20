@@ -8,6 +8,7 @@ import PrivateRoute from "./components/PrivateRoute";
 import Items from "./components/Items";
 import Item from "./components/Item";
 import Header from "./components/Header";
+import CurrentMelaket from "./components/CurrentMelaket";
 
 export const languageContext = createContext()
 
@@ -54,9 +55,11 @@ function App() {
       const getAll = urlParams.get('getAll') === 'true';
       
       // בניית URL עם query parameter אם נדרש
-      const apiUrl = getAll 
+      // ברירת מחדל: סינון לפי יום החלוקה (byDay) — הזמנה מופיעה מ-18:00 בערב שלפני יום החלוקה שלה.
+      // getAll=true ב-URL עוקף את הסינון ומציג את כל ההזמנות ששולמו.
+      const apiUrl = getAll
         ? `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders?getAll=true`
-        : `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders`;
+        : `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders?byDay=true`;
       
       const res = await axios.get(apiUrl, {
         headers: {
@@ -106,7 +109,10 @@ function App() {
   return (
     <languageContext.Provider value={{ language, setLanguage }}>
       {location.pathname.includes("items") && (
-        <Header id={id} go={go} loading={loading} setLoading={setLoading} orders={orders} />
+        <>
+          <CurrentMelaket />
+          <Header id={id} go={go} loading={loading} setLoading={setLoading} orders={orders} />
+        </>
       )}
       <main className="main">
         <Routes>

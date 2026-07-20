@@ -938,6 +938,11 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           <p>
             {t("phone")}: {order?.user_info?.contact}
           </p>
+          {order?.createdAt && (
+            <p>
+              {t("orderDate")}: {dayjs(order.createdAt).format("DD/MM/YYYY HH:mm")}
+            </p>
+          )}
           {userText && (
             <p>
               {t("notes")}: <span className="text_red">{userText}</span>

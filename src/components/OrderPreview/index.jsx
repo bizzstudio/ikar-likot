@@ -7,6 +7,7 @@ import { getWord, getWordString } from "../Language";
 import logo from "../../../public/logo.jpeg";
 import axios from "axios";
 import { FaTimes, FaCheckCircle } from "react-icons/fa";
+import dayjs from "dayjs";
 
 export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder }) {
     const { language } = useContext(languageContext);
@@ -21,6 +22,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
         name: getWord('name'),
         phone: getWord('phone'),
         id: getWord('id'),
+        orderDate: getWord('orderDate'),
         address: getWord('address'),
         notes: getWord('notes'),
         floor: getWord('floor'),
@@ -74,7 +76,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
 
         const containerHeight = tableContainerRef.current.clientHeight;
         const tableHeaderHeight = 47; // גובה כותרת הטבלה
-        const titleHeight = 150; // גובה אזור המידע העליון (בערך)
+        const titleHeight = 178; // גובה אזור המידע העליון (בערך; כולל שורת תאריך ההזמנה)
         const itemRowHeight = 80; // גובה שורה (60px תמונה + padding)
         
         const availableHeight = containerHeight - tableHeaderHeight - titleHeight;
@@ -189,6 +191,9 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                             </p>
                                             <p className="mb-1 leading-6"> {words.phone.props.children}: {order?.user_info?.contact}</p>
                                             <p className="mb-1 leading-6"> {words.id.props.children}: {order.invoice}</p>
+                                            {order?.createdAt && (
+                                                <p className="mb-1 leading-6"> {words.orderDate.props.children}: {dayjs(order.createdAt).format("DD/MM/YYYY HH:mm")}</p>
+                                            )}
                                             <p className="mb-1 leading-6"> {words.address.props.children}: {order?.user_info?.address?.city?.city_name_he + ", " + order?.user_info?.address?.street + " " + order?.user_info?.address?.houseNumber + (order?.user_info?.address?.apartmentNumber ? "/" + order?.user_info?.address?.apartmentNumber : '') + (order?.user_info?.address?.floor ? ", " + words.floor.props.children + " " + order?.user_info?.address?.floor : '')}</p>
                                         </div>
                                         <div className="mt-2">

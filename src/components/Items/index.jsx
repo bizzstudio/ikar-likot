@@ -144,10 +144,15 @@ export default function Items({ orders, loading, setLoading, go }) {
         setCityNames(prev => ({ ...prev, [order.invoice]: fullAddress }))
       })
 
+      // איסוף עצמי נקבע לפי shippingOption ("1"), ולא לפי דמי משלוח: מאז שהאיסוף העצמי
+      // זמין גם בערים שיש אליהן חלוקה, וגם כשעלות המשלוח של עיר היא 0, הסכום כבר לא
+      // מבחין בין השניים. נפילה חזרה ל-shippingCost להזמנות ישנות שאין בהן shippingOption.
+      const isSelfCollect = (o) =>
+        o?.shippingOption ? String(o.shippingOption) === "1" : o?.shippingCost === 0;
+
       setShippings((prev) => ({
-        // איסוף עצמי = הזמנות ללא דמי משלוח; משלוח = כל השאר
-        selfCollecting: orders.filter((o) => o.shippingCost === 0),
-        deliver: orders.filter((o) => o.shippingCost !== 0),
+        selfCollecting: orders.filter(isSelfCollect),
+        deliver: orders.filter((o) => !isSelfCollect(o)),
       }));
 
       if (sessionStorage.getItem("shippingStatus")) {

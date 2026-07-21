@@ -540,8 +540,15 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         })
         .filter((item) => item.quantity > 0);
 
+      // משלוח לשליח נוצר לכל הזמנה שאינה איסוף עצמי. ההבחנה לפי shippingOption ("1")
+      // ולא לפי דמי המשלוח — עלות 0 קיימת גם במשלוח בעיר ללא חיוב. נפילה חזרה
+      // ל-shippingCost להזמנות ישנות שנשמרו לפני שהשדה נורמל בשרת.
+      const isSelfCollectOrder = order?.shippingOption
+        ? String(order.shippingOption) === "1"
+        : order.shippingCost == 0;
+
       let lionwheelPayload = null;
-      if (order.shippingCost != 0) {
+      if (!isSelfCollectOrder) {
         lionwheelPayload = {
           pickup_at: new Date().toISOString(),
           "תאריך יצירת ההזמנה": order.createdAt

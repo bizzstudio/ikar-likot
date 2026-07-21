@@ -70,11 +70,15 @@ function App() {
       // מציגים הזמנות ששולמו וממתינות לליקוט ("Processing"), כאלה שכבר בליקוט ("Likut")
       // וכן "TransferToLikut" אם קיים. כך הזמנה ששולמה מופיעה אוטומטית בתור הליקוט.
       const allOrders = res?.data?.orders ?? [];
+      // "PendingShortages" נכלל גם הוא: ההזמנה טרם נסגרה וטרם חויבה, והיא ממתינה
+      // להכרעת המנהל במסך החוסרים. היא מוצגת ברשימה עם סימון "אין לסגור" ואינה
+      // ניתנת לפתיחה — כדי שהמלקטים יראו שהיא עדיין פתוחה ולא יסגרו אותה בטעות.
       const forLikut = allOrders.filter((o) => {
         const name = o?.status?.name;
         return (
           name === "Processing" ||
           name === "Likut" ||
+          name === "PendingShortages" ||
           (name && /^TransferToLikut$/i.test(name))
         );
       });

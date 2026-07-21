@@ -16,7 +16,7 @@ export default function CurrentMelaket() {
       : melaket.name || melaket.heName;
   if (!displayName) return null;
 
-  const accent = melaket.color || "#4b7d3f"; // ברירת מחדל בצבע המותג אם למלקט אין צבע
+  const accent = "#2d45a0"; // רקע כחול קבוע לכל המלקטים (מתעלם מהצבע האישי)
 
   return (
     <div

@@ -1,5 +1,5 @@
 // meshek_Likut_system/src/components/Header/index.jsx
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { languageContext } from "../../App";
 import "./style.css";
@@ -39,6 +39,13 @@ export default function Header({ id, go, setLoading, loading, orders = [] }) {
     if (order) {
       setLoading(true);
       try {
+        // ניקוי סריקות הארגזים שנשמרו מקומית. השרת מאפס את boxScanVerifiedAt
+        // בנטישה, ובלי הניקוי כאן פתיחה חוזרת של אותה הזמנה באותו טאב הייתה
+        // משחזרת מונה מלא (4/4) ומאפשרת לעבור את השער בלי לגעת באף ארגז.
+        try {
+          sessionStorage.removeItem(`boxScans_${order._id}`);
+        } catch { /* לא קריטי */ }
+
         await axios.put(
           `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders/${order._id}?status=Processing`,
           {},
@@ -96,15 +103,28 @@ export default function Header({ id, go, setLoading, loading, orders = [] }) {
     }
   };
 
+  // ref לפונקציית הנטישה — כדי שהאפקט שמתחתיו לא יהיה תלוי בה.
+  // leaveOrderBtn נוצרת מחדש בכל רינדור; תלות ישירה בה גרמה לאפקט לרוץ בכל
+  // רינדור, כלומר pushState בכל רינדור — ערימת ההיסטוריה התמלאה בכפילויות
+  // וכפתור "אחורה" נתפס לצמיתות (היה צריך ללחוץ עשרות פעמים כדי לצאת).
+  const leaveOrderBtnRef = useRef(leaveOrderBtn);
+  leaveOrderBtnRef.current = leaveOrderBtn;
+
+  // חטיפת כפתור "אחורה" רלוונטית **רק** במסך ליקוט של הזמנה ספציפית. במסך
+  // הרשימה אין מה לנטוש, והחטיפה שם רק שברה את הניווט הרגיל של הדפדפן.
+  const isOrderScreen = /^\/items\/[^/]+$/.test(location.pathname);
+
   useEffect(() => {
+    if (!isOrderScreen) return;
+
     // דוחף את המצב הנוכחי כדי למנוע חזרה אחורה מיידית
     window.history.pushState(null, null, window.location.href);
 
-    const handlePopState = (event) => {
+    const handlePopState = () => {
       // דוחף שוב את המצב כדי למנוע חזרה אחורה
       window.history.pushState(null, null, window.location.href);
       // תפעל את פונקציית הנטישה במקום לחזור אחורה
-      leaveOrderBtn();
+      leaveOrderBtnRef.current?.();
     };
 
     // מאזין לאירועי חזרה אחורה
@@ -113,7 +133,7 @@ export default function Header({ id, go, setLoading, loading, orders = [] }) {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [leaveOrderBtn]);
+  }, [isOrderScreen]);
 
   // ה-loading הגלובלי מנוקה רק ע"י מסך הרשימה, לכן מסתירים את ההדר בזמן טעינה
   // רק במסך הרשימה עצמו. במסך פריט/טפסים תמיד מציגים אותו (אחרת רענון ישיר על

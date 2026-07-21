@@ -64,6 +64,9 @@ export default function Items({ orders, loading, setLoading, go }) {
   const floorWord = getWord('floor')?.props?.children;
 
   const rowClassName = (record, index) => {
+    if (record?.status?.name === "PendingShortages") {
+      return "t_red";
+    }
     if (record?.status?.name === "Likut") {
       if (record?.actualMelaket?.color) {
         return ""; // מחזיר מחלקה ריקה כדי לא להחיל שום מחלקת CSS
@@ -111,7 +114,14 @@ export default function Items({ orders, loading, setLoading, go }) {
     {
       title: getWord('id'),
       dataIndex: "number",
-      // render: (text) => text.slice(-7), // להציג רק את 7 התווים האחרונים
+      // הזמנה שממתינה להכרעת חוסרים מסומנת ב-✕ אדום בולט — סימן למלקטים שאין
+      // לסגור אותה עד שהמנהל יאשר את החוסרים או יחזיר פריטים להשלמה.
+      render: (text, record) =>
+        record?.status?.name === "PendingShortages" ? (
+          <span className="text-red-600 font-bold whitespace-nowrap">✕ {text}</span>
+        ) : (
+          text
+        ),
     },
     // עמודות סכום וכמות הוסרו מתצוגת המלקט לפי האפיון —
     // המלקט צריך רק מידע תפעולי: כתובת, מספר הזמנה, שעה.
@@ -165,6 +175,11 @@ export default function Items({ orders, loading, setLoading, go }) {
       setLoading(false);
 
     } else if (orders) {
+      // רשימה ריקה — חייבים לנקות גם את המצב הנגזר. בלי זה shippings (ולכן גם
+      // הטבלה) שומרים את התוכן הקודם, והמלקט שסיים את ההזמנה האחרונה חוזר לרשימה
+      // ורואה אותה עדיין שם, ניתנת ללחיצה.
+      setShippings({ selfCollecting: [], deliver: [] });
+      setData([]);
       setLoading(false);
     }
   }, [orders, language]);
@@ -277,6 +292,12 @@ export default function Items({ orders, loading, setLoading, go }) {
             {data.length > 0 && <Table
               onRow={(record, rowIndex) => ({
                 onClick: (event) => {
+                  // הזמנה שממתינה להכרעת חוסרים נעולה — אין מה לעשות בה עד
+                  // שהמנהל יכריע, והשרת גם דוחה כל ניסיון לנעול אותה מחדש.
+                  if (data[rowIndex]?.status?.name === "PendingShortages") {
+                    alert(getWordString(language, 'orderWaitingForShortages'));
+                    return;
+                  }
                   const melaketId = data[rowIndex]?.actualMelaket?._id ?? data[rowIndex]?.actualMelaket;
                   const isTakenByOther = data[rowIndex].status.name === 'Likut' && melaketId && String(melaketId) !== String(localStorage.melaketId);
                   if (!isTakenByOther) {

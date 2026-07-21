@@ -10,6 +10,7 @@ import { languageContext } from "../../App";
 import "./style.css";
 import { getWordString } from "../Language";
 import BarcodeScanner from "../BarcodeScanner";
+import BoxScanGate from "../BoxScanGate";
 import {
   FaCheckCircle,
   FaBoxOpen,
@@ -37,7 +38,23 @@ const IMG_PLACEHOLDER =
 // נרמול ברקוד להשוואה — עקבי עם lib/normalizeBarcode בבקנד (בלי הסרת אפסים מובילים)
 const normalizeBarcode = (v) =>
   String(v ?? "").trim().replace(/\s+/g, "").toUpperCase();
-const productIdStr = (item) => (item?._id != null ? String(item._id) : null);
+// מזהה **שורת עגלה** ולא מזהה מוצר. `_id` אינו ייחודי: מוצר עם ווריאנטים מייצר
+// כמה שורות עם אותו `_id` ו-`id` שונה, ושורת מתנה נבנית מהמוצר עצמו ולכן חולקת
+// את ה-`_id` של השורה הרגילה. מיפוי לפי `_id` קיפל שתי שורות לאחת והציג למלקט
+// כמות שגויה. במוצר ללא ווריאנטים `id === _id`, ולכן תואם לאחור.
+const productIdStr = (item) => {
+  const key = item?.id ?? item?._id;
+  return key != null ? String(key) : null;
+};
+
+// הודעות השרת מגיעות כ-{he, en}. ערכי השפה באפליקציה הם "hebrew"|"en"|"thai",
+// ולכן גישה ישירה ב-message[language] מחזירה undefined ומדפיסה "[object Object]".
+const serverMessage = (data, language) => {
+  const msg = data?.message;
+  if (!msg) return null;
+  if (typeof msg === "string") return msg;
+  return (language === "hebrew" ? msg.he : msg.en) || msg.he || msg.en || null;
+};
 
 // התאמה מול סט הברקודים של הפריט (ריבוי-ברקודים §6): item.barcodes מגיע מהשרת
 // מועשר; נופלים חזרה לשדה הברקוד הבודד אם הסט חסר.
@@ -61,6 +78,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const [userText, setUserText] = useState("");
   const [numOfBoxes, setNumOfBoxes] = useState("");
   const [submiting, setSubmiting] = useState(false);
+  // כשל ביצירת משימת המשלוח בליונוויל. ההזמנה כבר סגורה ומחויבת — אבל בלי
+  // משלוח. כל עוד זה מלא, המלקט לא ממשיך הלאה ורואה באנר עם כפתור שליחה חוזרת.
+  const [shipmentError, setShipmentError] = useState(null);
+  const [resending, setResending] = useState(false);
 
   const [pickedQuantities, setPickedQuantities] = useState({}); // pid -> כמות שנלקטה בפועל
   const [shortageItems, setShortageItems] = useState({}); // pid -> true (סומן בחוסר)
@@ -95,6 +116,9 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // לרוץ אחרי הניווט ולהחיות מצב ישן. מחזיק גם את מזהה ה-timer לביטול מיידי.
   const completedRef = useRef(false);
   const progressTimerRef = useRef(null);
+  // פרטי המלקט שסגר את ההזמנה — נשמרים לשליחה החוזרת של המשלוח, שמתרחשת
+  // אחרי שה-scope של handleDone כבר הסתיים.
+  const melaketRef = useRef(null);
 
   // ---- שליפת ההזמנה ----
   useEffect(() => {
@@ -104,6 +128,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
         });
         setOrder(response.data);
+        // שחזור מצב "המשלוח נכשל" אחרי רענון דף / כניסה חוזרת: כשיש כשל שמור
+        // ואין מזהה משימה, המשלוח עדיין חסר וההתראה חייבת לחזור — אחרת הכשל
+        // נעלם ברגע שהמלקט מרענן, וההזמנה נשארת סגורה בלי שליח.
+        // status === "error" בלבד: "disabled" פירושו שהאינטגרציה עצמה אינה מוגדרת
+        // בשרת (אין מפתח) — זו לא תקלה שהמלקט יכול או צריך לפתור.
+        const sh = response.data?.shipment;
+        if (sh?.status === "error" && !sh?.taskId) setShipmentError(sh.lastError);
       } catch (error) {
         console.error("Error fetching order:", error);
         alert(t("orderNotFound"));
@@ -117,6 +148,22 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   useEffect(() => {
     if (numberOfOrder.id) setId(numberOfOrder.id);
   }, [numberOfOrder.id]);
+
+  // ---- מצב השלמת חוסרים ----
+  // הזמנה שסיימה ליקוט עם חוסרים המתינה בסטטוס "ממתין לחוסרים". אחרי שהמנהל הכריע
+  // כל פריט במסך החוסרים היא חוזרת לכאן עם shortageHold.resolvedAt חתום. במצב הזה:
+  //   1. חייבים לסרוק את ברקודי הארגזים לפני כל דבר אחר (BoxScanGate).
+  //   2. התור מצומצם לפריטים שסומנו "החזרה להשלמת ליקוט" (repickItems) בלבד.
+  //   3. הסיום קורא ל-finalize (חיוב + חשבונית + מדבקות סופיות) ולא ל-send-and-update.
+  const isShortageCompletion = !!order?.shortageHold?.resolvedAt;
+  const repickItems = useMemo(
+    () => (isShortageCompletion ? (order?.repickItems || []).map(String) : []),
+    [isShortageCompletion, order]
+  );
+  // סריקת הארגזים מאומתת בשרת (boxScanVerifiedAt); boxScanDone מאפשר להמשיך מיד
+  // אחרי אימות מוצלח בלי לרענן את ההזמנה מהשרת.
+  const [boxScanDone, setBoxScanDone] = useState(false);
+  const needsBoxScan = isShortageCompletion && !order?.boxScanVerifiedAt && !boxScanDone;
 
   // ---- מפות עזר ----
   const cartByPid = useMemo(() => {
@@ -152,6 +199,16 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   const allItems = order?.cart || [];
+  // מוני ההתקדמות מתייחסים לפריטים שבתור בפועל. בהשלמת חוסרים התור מצומצם
+  // לפריטים שהוחזרו לליקוט בלבד, ולכן ספירה על כל העגלה הייתה מציגה למלקט
+  // "פריט 1 מתוך 23" כשיש לו בפועל 2 פריטים לטפל בהם.
+  const queueItems = useMemo(() => {
+    if (!queue.length) return allItems;
+    return queue.map((pid) => cartByPid[pid]).filter(Boolean);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue, cartByPid, order]);
+  // allHandled נשאר מבוסס-עגלה במכוון: אסור לסגור הזמנה כל עוד קיים פריט
+  // כלשהו שלא טופל, גם אם הוא מחוץ לתור הנוכחי.
   const doneCount = allItems.filter((it) => isDone(productIdStr(it))).length;
   // "לוקטו" = פריטים שנלקטו בפועל בלבד. פריט שדווח בחוסר טופל אך לא נלקט,
   // ולכן נספר בנפרד ("בחוסר") ולא מנופח את מונה הליקוט.
@@ -163,16 +220,26 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const totalCount = allItems.length;
   const allHandled = totalCount > 0 && doneCount === totalCount;
 
+  // מוני התצוגה — מבוססי-תור, כדי שהמספרים שהמלקט רואה יתארו את מה שיש לו לעשות
+  const queueTotal = queueItems.length;
+  const queueDone = queueItems.filter((it) => isDone(productIdStr(it))).length;
+
   // ---- אתחול רשימה קבועה, כמויות ומיקום המצביע (מהשרת או מ-sessionStorage) ----
   useEffect(() => {
     if (!order?.cart) return;
     const id = numberOfOrder.id;
 
     // סדר תצוגה קבוע: לפי ברקוד. דטרמיניסטי — נשמר זהה בכל טעינה, ולא משתנה בניווט.
-    const stableOrder = [...order.cart]
+    let stableOrder = [...order.cart]
       .sort((a, b) => String(a.barcode || "").localeCompare(String(b.barcode || "")))
       .map((it) => productIdStr(it))
       .filter(Boolean);
+
+    // במצב השלמת חוסרים מציגים אך ורק את הפריטים שהמנהל סימן "החזרה להשלמת ליקוט".
+    // כל השאר כבר לוקטו או שהחוסר בהם אושר — אין מה לעשות איתם.
+    if (isShortageCompletion && repickItems.length > 0) {
+      stableOrder = stableOrder.filter((pid) => repickItems.includes(pid));
+    }
 
     // מקור אמת ראשון: התקדמות שנשמרה בשרת (המשך מאותו מצב גם בין מכשירים);
     // נפילה חזרה ל-sessionStorage המקומי.
@@ -191,9 +258,18 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       savedIdx = Number.isInteger(si) ? si : null;
     }
 
+    // פריט שהוחזר להשלמת ליקוט סומן בחוסר בסבב הקודם. אם נשאיר את הסימון —
+    // isDone יחזיר עליו true, הוא ייחשב "טופל" ומסך הסיום ייפתח מיד בלי ללקט אותו.
+    if (isShortageCompletion && repickItems.length > 0) {
+      short = { ...short };
+      repickItems.forEach((pid) => delete short[pid]);
+    }
+
     setPickedQuantities(picked);
     setShortageItems(short);
-    if (boxes != null) setNumOfBoxes(String(boxes));
+    // במצב השלמה שואלים שוב על מספר הארגזים (לפי האפיון) — לא ממלאים מראש
+    // את הערך הקודם, כדי שהמלקט יאשר במפורש כמה ארגזים יוצאים בפועל.
+    if (boxes != null && !isShortageCompletion) setNumOfBoxes(String(boxes));
     setQueue(stableOrder);
 
     // מיקום התחלתי: המשך מהמיקום השמור, אחרת הפריט הראשון שעדיין לא טופל.
@@ -204,7 +280,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     });
     const doneFn = (pid) => !!short[pid] || (picked[pid] || 0) >= (reqMap[pid] || 0);
     let startIdx = 0;
-    if (savedIdx != null && savedIdx >= 0 && savedIdx < stableOrder.length) {
+    // במצב השלמה התור צומצם, ולכן המצביע השמור מהסבב הקודם אינו רלוונטי —
+    // מתחילים מהפריט הראשון שטרם הושלם.
+    if (isShortageCompletion) {
+      const fp = stableOrder.findIndex((pid) => !doneFn(pid));
+      startIdx = fp >= 0 ? fp : 0;
+    } else if (savedIdx != null && savedIdx >= 0 && savedIdx < stableOrder.length) {
       startIdx = savedIdx;
     } else {
       const fp = stableOrder.findIndex((pid) => !doneFn(pid));
@@ -220,10 +301,17 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (completedRef.current) return; // ההזמנה כבר הושלמה — לא לשמור מצב ישן
     const timer = setTimeout(() => {
       if (completedRef.current) return; // נבדק שוב ברגע הירי — למקרה שהושלמה בינתיים
+      // numOfBoxes נשלח רק כשיש בו ערך אמיתי. במצב השלמת חוסרים השדה מתחיל ריק
+      // (שואלים שוב), וה-PATCH הראשון היה כותב numOfBoxes:"" ומוחק את מספר
+      // הארגזים שנשמר בסבב הראשון — המספר שעליו מבוסס אימות סריקת הארגזים.
+      const progress = { pickedQuantities, shortageItems, queue, currentIndex };
+      const boxes = parseInt(numOfBoxes, 10);
+      if (Number.isFinite(boxes) && boxes > 0) progress.numOfBoxes = boxes;
+
       axios
         .patch(
           `${API}/app/orders/${numberOfOrder.id}/progress`,
-          { progress: { pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex } },
+          { progress },
           { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
         )
         .catch(() => {});
@@ -255,13 +343,20 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         params: { status: "Likut" },
       })
       .catch((err) => {
-        if (order.actualMelaket?._id !== localStorage.melaketId) {
+        // 409 = ההזמנה נעולה למישהו אחר / ממתינה לחוסרים / כבר בליקוט. השרת מנסח
+        // את הסיבה — מציגים אותה כמו שהיא במקום לנחש. סדר הבדיקות הפוך מבעבר:
+        // ההשוואה הישנה (ObjectId מול מחרוזת, בלי String()) הייתה כמעט תמיד אמת
+        // ובלעה את ענף ה-409 עם הודעה גנרית + reload מיותר.
+        if (err.response?.status === 409) {
+          alert(serverMessage(err.response.data, language) || t("alreadyTaken"));
+          nav("/items");
+          return;
+        }
+        const ownerNow = order.actualMelaket?._id ?? order.actualMelaket;
+        if (String(ownerNow ?? "") !== String(localStorage.melaketId ?? "")) {
           alert(t("alreadyTaken"));
           nav("/items");
           window.location.reload();
-        } else if (err.response?.status === 409) {
-          alert(err.response.data?.message?.[language] || err.response.data?.message || "");
-          nav("/items");
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -279,13 +374,14 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled) {
+    // needsBoxScan: שער סריקת הארגזים מנהל פוקוס משלו — אסור לגזול לו אותו
+    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled && !needsBoxScan) {
       const el = barcodeInputRef.current;
       // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
       // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
       if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
     }
-  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner]);
+  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner, needsBoxScan]);
 
   // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט
   useEffect(() => {
@@ -475,6 +571,66 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     setFeedback(null);
   };
 
+  // ---- התראות הסיום + חזרה לרשימה ----
+  // הופרד מ-handleDone כדי שגם השליחה החוזרת של המשלוח תסיים באותו מסלול בדיוק
+  // (הודעת ווטסאפ ללקוח עם קישור המעקב + מייל לצוות), ולא רק בסגירה הראשונה.
+  const notifyAndLeave = ({ trackingLink, melaket }) => {
+    // אחרי רענון דף melaketRef ריק (המצב שוחזר מה-DB ולא מ-handleDone) — נופלים
+    // חזרה למלקט המחובר, אחרת ההודעה ללקוח תצא בלי שם וטלפון של מי שליקט.
+    const melaketInfo =
+      melaket || statuses.find((s) => s._id === localStorage.getItem("melaketId"));
+    const orderReadyPayload = {
+      date: order.createdAt,
+      userFirstName: order?.user_info?.name,
+      userLastName: order?.user_info?.lastName,
+      userPhone: order?.user_info?.contact,
+      orderInvoice: order.invoice,
+      total: order.total,
+      shipping: order.shippingCost,
+      notes: userText,
+      melaketName: melaketInfo?.heName,
+      melaketPhone: melaketInfo?.phone,
+      tracking_link: trackingLink,
+    };
+    const kirshnerBase = import.meta.env.VITE_KIRSHNER_WHATSAPP_SERVER_URL;
+    const kirshnerHeaders = {
+      headers: { "x-api-key": import.meta.env.VITE_KIRSHNER_WHATSAPP_API_KEY },
+    };
+    const appAuthHeaders = {
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+    };
+    // בונים את משימות ההתראה. הודעת ה-WhatsApp ללקוח נשלחת רק אם כתובת שרת
+    // הוואטסאפ מוגדרת (VITE_KIRSHNER_WHATSAPP_SERVER_URL) — אחרת מדלגים עליה
+    // במקום לפנות לכתובת שגויה (שהחזירה 405) ולהקפיץ התראת שגיאה מיותרת.
+    const notifyTasks = [];
+    if (kirshnerBase) {
+      notifyTasks.push(
+        axios.post(`${kirshnerBase}/send-order-ready`, orderReadyPayload, kirshnerHeaders)
+      );
+    } else {
+      console.warn(
+        "VITE_KIRSHNER_WHATSAPP_SERVER_URL is not configured — skipping customer WhatsApp notification"
+      );
+    }
+    notifyTasks.push(
+      axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders)
+    );
+    // התראות ללקוח (וואטסאפ) ולצוות (מייל) נשלחות ברקע — לא חוסמות את חזרת
+    // המלקט לרשימה, כי סיום ההזמנה כבר בוצע בשרת (send-and-update הצליח). זה
+    // מקצר משמעותית את זמן "סיום ההזמנה". אם שליחה נכשלת עדיין מתריעים כדי
+    // שיעדכנו את הלקוח ידנית (ההתראה תופיע לאחר החזרה לרשימה).
+    Promise.allSettled(notifyTasks).then((settled) => {
+      const failed = settled.filter((r) => r.status === "rejected");
+      if (failed.length) {
+        console.error("order-ready notifications:", failed.map((r) => r.reason));
+        alert(t("errorSendingMessage"));
+      }
+    });
+
+    setUpdateOrders((prev) => !prev); // מפעיל רענון רשימה מהשרת ב-App
+    nav("/items"); // חזרה לרשימת כל ההזמנות אחרי סיום מוצלח
+  };
+
   // ---- סיום הזמנה — הלוגיקה נשמרה 1:1 מהגרסה הקודמת ----
   const handleDone = async () => {
     if (submiting) return;
@@ -533,10 +689,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       }
 
       // בניית pickedItems לפי הכמות שנלקטה בפועל
+      // id = מזהה השורה (מבחין בין ווריאנטים/מתנות של אותו מוצר), _id נשמר
+      // לתאימות עם שרת שטרם עודכן. השרת מעדיף את id.
       const pickedItems = order.cart
         .map((item) => {
           const pid = productIdStr(item);
-          return { _id: item._id, quantity: pickedQuantities[pid] || 0 };
+          return { _id: item._id, id: pid, quantity: pickedQuantities[pid] || 0 };
         })
         .filter((item) => item.quantity > 0);
 
@@ -547,107 +705,96 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         ? String(order.shippingOption) === "1"
         : order.shippingCost == 0;
 
-      let lionwheelPayload = null;
-      if (!isSelfCollectOrder) {
-        lionwheelPayload = {
-          pickup_at: new Date().toISOString(),
-          "תאריך יצירת ההזמנה": order.createdAt
-            ? dayjs(order.createdAt).format("DD/MM/YYYY HH:mm")
-            : dayjs().format("DD/MM/YYYY HH:mm"),
-          company_id: "71145",
-          original_order_id: numberOfOrder.id,
-          notes: `${order.customer_note ? order.customer_note + "." : ""}
-  ${order.callOnArrival === false ? "נא להניח את ההזמנה ליד הדלת." : ""}`,
-          source_city: "מושב קדרון",
-          source_street: "הרימון",
-          source_number: "12",
-          source_recipient_name: "האיכר",
-          source_phone: "0586692614",
-          destination_city: order?.user_info?.address?.city?.city_name_he,
-          destination_street: order?.user_info?.address?.street,
-          destination_number: order?.user_info?.address?.houseNumber,
-          destination_floor: (() => {
-            const floorValue = parseInt(order?.user_info?.address?.floor, 10);
-            return isNaN(floorValue) || floorValue <= 0 ? 1 : floorValue;
-          })(),
-          destination_apartment: order?.user_info?.address?.apartmentNumber,
-          destination_notes: order?.user_info?.address?.entryCode
-            ? "קוד כניסה לבניין: " + order?.user_info?.address?.entryCode
-            : "",
-          destination_recipient_name: `${order?.user_info?.name} ${order?.user_info?.lastName || ""}`,
-          destination_phone: order?.user_info?.contact,
-          line_items: [{ name: "ארגזים", quantity: Number(numOfBoxes) }],
-          packages_quantity: Number(numOfBoxes),
-          money_collect: 0,
-        };
-      }
+      // ⚠ ה-payload של ליונוויל נבנה היום **בשרת** מתוך ההזמנה
+      // (ikar-backend/lib/lionwheel/buildTaskPayload.js), כולל כתובת האיסוף
+      // ו-company_id שמגיעים ממשתני סביבה. מה שנשלח מכאן הוא רק סימון בינארי:
+      // null = איסוף עצמי → לא ייווצר משלוח | לא-null = ליצור משלוח.
+      // (השרת מזהה איסוף עצמי גם בעצמו; זו שכבת הגנה שנייה.)
+      // שינוי כתובת המחסן נעשה ב-.env של הבקנד, לא כאן.
+      const lionwheelPayload = isSelfCollectOrder ? null : true;
+
+      // מצב השלמת חוסרים נסגר דרך finalize (חיוב + חשבונית + מדבקות סופיות);
+      // סיום ליקוט רגיל נשאר על send-and-update.
+      const endpoint = isShortageCompletion
+        ? `${API}/app/orders/${order._id}/finalize`
+        : `${API}/app/orders/send-and-update/${order._id}`;
 
       let result;
       try {
         result = await axios.post(
-          `${API}/app/orders/send-and-update/${order._id}`,
+          endpoint,
           { pickedItems, lionwheelPayload, numOfBoxes: Number(numOfBoxes) || 1 },
           { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
         );
       } catch (error) {
         console.error("error :>> ", error);
-        alert(t("errorUpdateOrder"));
+        // כישלון חיוב בסגירה הסופית (402) — ההזמנה **לא** נסגרה. מציגים את הודעת
+        // השרת כדי שהמלקט ידע לפנות למנהל ולא יחשוב שההזמנה יצאה.
+        alert(serverMessage(error?.response?.data, language) || t("errorUpdateOrder"));
+        // ניסיון חוזר מותר רק כשברור שהחיוב **לא** בוצע. בתקלת תקשורת מול חברת
+        // האשראי (chargeAmbiguous) ייתכן שהכסף כבר ירד — לחיצה נוספת עלולה לחייב
+        // פעמיים, ולכן משאירים את ההזמנה נעולה עד בדיקת מנהל.
+        if (!error?.response?.data?.chargeAmbiguous) {
+          completedRef.current = false;
+        }
         return;
       }
 
-      const orderReadyPayload = {
-        date: order.createdAt,
-        userFirstName: order?.user_info?.name,
-        userLastName: order?.user_info?.lastName,
-        userPhone: order?.user_info?.contact,
-        orderInvoice: order.invoice,
-        total: order.total,
-        shipping: order.shippingCost,
-        notes: userText,
-        melaketName: fullValue?.heName,
-        melaketPhone: fullValue?.phone,
-        tracking_link: result?.data?.lionwheelResponse?.tracking_link,
-      };
-      const kirshnerBase = import.meta.env.VITE_KIRSHNER_WHATSAPP_SERVER_URL;
-      const kirshnerHeaders = {
-        headers: { "x-api-key": import.meta.env.VITE_KIRSHNER_WHATSAPP_API_KEY },
-      };
-      const appAuthHeaders = {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-      };
-      // בונים את משימות ההתראה. הודעת ה-WhatsApp ללקוח נשלחת רק אם כתובת שרת
-      // הוואטסאפ מוגדרת (VITE_KIRSHNER_WHATSAPP_SERVER_URL) — אחרת מדלגים עליה
-      // במקום לפנות לכתובת שגויה (שהחזירה 405) ולהקפיץ התראת שגיאה מיותרת.
-      const notifyTasks = [];
-      if (kirshnerBase) {
-        notifyTasks.push(
-          axios.post(`${kirshnerBase}/send-order-ready`, orderReadyPayload, kirshnerHeaders)
-        );
-      } else {
-        console.warn(
-          "VITE_KIRSHNER_WHATSAPP_SERVER_URL is not configured — skipping customer WhatsApp notification"
-        );
+      // הזמנה שנכנסה להמתנה לחוסרים לא נסגרה ולא חויבה — לא שולחים ללקוח הודעת
+      // "ההזמנה מוכנה", כי היא עדיין לא. מייל הביניים נשלח מהשרת.
+      if (result?.data?.holdForShortages) {
+        alert(t("orderMovedToShortages"));
+        // setUpdateOrders מפעיל את go() ב-App שמרענן את הרשימה מהשרת.
+        // (setOrders() בלי ארגומנט היה מאפס את הרשימה ל-undefined ומהבהב מסך ריק.)
+        setUpdateOrders((prev) => !prev);
+        nav("/items");
+        return;
       }
-      notifyTasks.push(
-        axios.post(`${API}/app/orders/send-order-ready-email`, orderReadyPayload, appAuthHeaders)
-      );
-      // התראות ללקוח (וואטסאפ) ולצוות (מייל) נשלחות ברקע — לא חוסמות את חזרת
-      // המלקט לרשימה, כי סיום ההזמנה כבר בוצע בשרת (send-and-update הצליח). זה
-      // מקצר משמעותית את זמן "סיום ההזמנה". אם שליחה נכשלת עדיין מתריעים כדי
-      // שיעדכנו את הלקוח ידנית (ההתראה תופיע לאחר החזרה לרשימה).
-      Promise.allSettled(notifyTasks).then((settled) => {
-        const failed = settled.filter((r) => r.status === "rejected");
-        if (failed.length) {
-          console.error("order-ready notifications:", failed.map((r) => r.reason));
-          alert(t("errorSendingMessage"));
-        }
-      });
 
-      setUpdateOrders((prev) => !prev);
-      setOrders();
-      nav("/items"); // חזרה לרשימת כל ההזמנות אחרי סיום מוצלח
+      // ===== כשל ביצירת משימת המשלוח =====
+      // ההזמנה כבר נסגרה וחויבה, אבל אף שליח לא קיבל אותה. לא ממשיכים לרשימה
+      // ולא שולחים ללקוח "ההזמנה מוכנה" (אין קישור מעקב) — המלקט עומד כאן עכשיו
+      // והוא היחיד שיכול לתקן את זה בלחיצה. skipped = איסוף עצמי, זה לא כשל.
+      const shipmentInfo = result?.data?.shipment;
+      if (shipmentInfo && !shipmentInfo.created && !shipmentInfo.skipped) {
+        melaketRef.current = fullValue;
+        setShipmentError(shipmentInfo.error || t("shipmentFailedTitle"));
+        return;
+      }
+
+      notifyAndLeave({
+        trackingLink: result?.data?.lionwheelResponse?.tracking_link,
+        melaket: fullValue,
+      });
     } finally {
       setSubmiting(false);
+    }
+  };
+
+  // ---- שליחה חוזרת של המשלוח אחרי כשל ----
+  // ההזמנה כבר סגורה ומחויבת; כאן נוצרת רק משימת המשלוח החסרה. השרת בונה את
+  // ה-payload מחדש מההזמנה, כך שתיקון נתונים (למשל כתובת) ייכנס לתוקף מיד.
+  const handleResendShipment = async () => {
+    if (resending) return;
+    setResending(true);
+    try {
+      const { data } = await axios.post(
+        `${API}/app/orders/${order._id}/resend-shipment`,
+        {},
+        { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }
+      );
+      setShipmentError(null);
+      notifyAndLeave({
+        trackingLink: data?.shipment?.trackingLink,
+        melaket: melaketRef.current,
+      });
+    } catch (error) {
+      console.error("resend-shipment error :>> ", error);
+      setShipmentError(
+        serverMessage(error?.response?.data, language) || t("shipmentFailedTitle")
+      );
+    } finally {
+      setResending(false);
     }
   };
 
@@ -694,13 +841,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           </span>
           {!allHandled && (
             <span>
-              {t("itemWord")} {currentIndex + 1} {t("ofWord")} {totalCount}
+              {t("itemWord")} {currentIndex + 1} {t("ofWord")} {queueTotal}
             </span>
           )}
         </div>
         <div className="flex gap-2 mb-4">
           <div className="flex-1 rounded-lg bg-blue-50 text-blue-800 text-center py-2 font-bold">
-            {t("remainingWord")}: {totalCount - doneCount}
+            {t("remainingWord")}: {queueTotal - queueDone}
           </div>
           <div className="flex-1 rounded-lg bg-green-50 text-green-800 text-center py-2 font-bold">
             {t("pickedWord")}: {pickedCount}
@@ -712,7 +859,61 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           )}
         </div>
 
-        {allHandled ? (
+        {/* באנר מצב השלמת חוסרים — כדי שיהיה ברור שזו לא הזמנה רגילה */}
+        {isShortageCompletion && (
+          <div className="mb-4 rounded-lg bg-orange-100 text-orange-800 px-3 py-2 text-sm font-bold text-center">
+            {t("shortageCompletionBanner")}
+          </div>
+        )}
+
+        {shipmentError ? (
+          /* ---- כשל ביצירת המשלוח ---- */
+          /* ההזמנה כבר נסגרה וחויבה. המסך הזה גובר על כל השאר כדי שהמלקט לא
+             ימשיך הלאה בלי לדעת שאין שליח — הוא היחיד שיכול לתקן את זה עכשיו. */
+          <div className="rounded-2xl border-2 border-red-500 bg-red-50 p-6 text-center flex flex-col gap-4">
+            <FaExclamationTriangle className="text-red-500 mx-auto" size={48} />
+            <h2 className="text-xl font-bold text-red-700">{t("shipmentFailedTitle")}</h2>
+            <p className="text-gray-800 font-bold">
+              {t("finishOrderTitle")} {order.invoice}
+            </p>
+            <p className="text-gray-700">{t("shipmentFailedBody")}</p>
+            <p className="text-xs text-gray-500 break-words" dir="ltr">
+              {shipmentError}
+            </p>
+            <button
+              onClick={handleResendShipment}
+              disabled={resending}
+              className="border-none text-white rounded-full font-bold text-base py-3 px-6 flex items-center justify-center gap-1.5 bg-red-600 mx-auto disabled:opacity-50"
+            >
+              {resending ? (
+                <img src={spinnerLoadingImage} alt="Loading" width={20} height={20} />
+              ) : (
+                <FaCheckCircle />
+              )}
+              {t("resendShipment")}
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(t("shipmentFailedLeaveConfirm"))) nav("/items");
+              }}
+              className="text-gray-600 underline text-sm"
+            >
+              {t("backToListAnyway")}
+            </button>
+          </div>
+        ) : needsBoxScan ? (
+          /* ---- שער סריקת הארגזים (לפני כל השלמה) ---- */
+          <BoxScanGate
+            order={order}
+            expectedBoxes={order?.shortageHold?.numOfBoxes || order?.numOfBoxes || 1}
+            hasScanner={hasScanner}
+            toggleScanner={toggleScanner}
+            onVerified={() => setBoxScanDone(true)}
+            onLocked={() => nav("/items")}
+            t={t}
+            language={language}
+          />
+        ) : allHandled ? (
           /* ---- מסך סיום ---- */
           <div className="rounded-2xl border-2 border-mainColor p-6 text-center flex flex-col gap-4">
             <FaCheckCircle className="text-green-500 mx-auto" size={48} />
@@ -935,7 +1136,27 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
               </button>
             </div>
           </div>
-        ) : null}
+        ) : (
+          /* מצב קצה: אין פריט נוכחי אך ההזמנה לא סומנה כמטופלת במלואה — למשל תור
+             השלמת חוסרים שהתרוקן כי מזהי ה-repick לא נמצאו בעגלה. בלי המסך הזה
+             המלקט היה נתקע בדף ריק בלי שום דרך להמשיך. */
+          <div className="rounded-2xl border-2 border-orange-400 p-6 text-center flex flex-col gap-3">
+            <FaExclamationTriangle className="text-orange-500 mx-auto" size={40} />
+            <p className="font-bold text-gray-800">{t("noItemsToPick")}</p>
+            <button
+              onClick={() => setShowList(true)}
+              className="text-mainColor underline text-sm"
+            >
+              {t("openItemsList")}
+            </button>
+            <button
+              onClick={() => nav("/items")}
+              className="border-none text-white rounded-full font-bold text-base py-2 px-6 bg-mainColor mx-auto"
+            >
+              {t("back")}
+            </button>
+          </div>
+        )}
 
         {/* פרטי לקוח + הערות */}
         <div className="mt-4 text-sm text-gray-600 leading-6">

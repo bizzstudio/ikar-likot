@@ -97,10 +97,20 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
         }
     }, [order, language, isOpen]);
 
+    // מצב השלמת חוסרים: ההזמנה חזרה ממסך החוסרים, ורק הפריטים שסומנו "החזרה
+    // להשלמת ליקוט" רלוונטיים. הצגת העגלה המלאה כאן מטעה — המלקט מצפה ללקט הכל
+    // ואז מגלה שהתור מכיל פריט אחד.
+    const isShortageCompletion = !!order?.shortageHold?.resolvedAt;
+    const repickIds = (order?.repickItems || []).map(String);
+    const relevantCart =
+        isShortageCompletion && repickIds.length > 0
+            ? (order?.cart || []).filter((it) => repickIds.includes(String(it.id ?? it._id)))
+            : order?.cart || [];
+
     useEffect(() => {
         if (order && maxVisibleItems > 0) {
             // הצגת המוצרים לפי המקום הפנוי במסך
-            const visibleCart = order.cart.slice(0, maxVisibleItems);
+            const visibleCart = relevantCart.slice(0, maxVisibleItems);
             setData(
                 visibleCart.sort((a, b) => String(a.barcode).localeCompare(String(b.barcode))).map((item, index) => {
                     const barcode = item.barcode || "";
@@ -167,6 +177,11 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
             onClick={handleBackdropClick}
         >
             <div className="bg-white rounded-xl w-[90%] h-[95%] max-w-[800px] max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+                {isShortageCompletion && (
+                    <div className="bg-orange-100 text-orange-800 px-4 py-2 text-sm font-bold text-center">
+                        {getWordString(language, "shortageCompletionPreview")}
+                    </div>
+                )}
                 <div className="flex-1 p-3 overflow-hidden" ref={tableContainerRef}>
                     <div className="relative h-full">
                         <div className="h-full overflow-hidden">
@@ -203,11 +218,11 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                 )}
                             />
                         </div>
-                        {order.cart && order.cart.length > 0 && (
+                        {relevantCart.length > 0 && (
                             <div className="absolute -bottom-[2px] left-0 right-0 h-32 bg-gradient-to-t from-white to-transparent flex items-end justify-center pointer-events-none">
-                                <div className="bg-mainColor-superLight bg-opacity-70 text-mainColor px-4 py-2 rounded-full text-xs 
+                                <div className="bg-mainColor-superLight bg-opacity-70 text-mainColor px-4 py-2 rounded-full text-xs
                                 font-medium mb-2 shadow-sm">
-                                    {words.totalItems.props.children.replace('{count}', order.cart.length)}
+                                    {words.totalItems.props.children.replace('{count}', relevantCart.length)}
                                 </div>
                             </div>
                         )}

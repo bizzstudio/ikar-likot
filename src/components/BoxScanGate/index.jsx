@@ -125,9 +125,13 @@ export default function BoxScanGate({
       return;
     }
 
-    // ארגז ייחודי שכבר נסרק — מונעים ספירה כפולה של אותו ארגז (הסיבה למעבר
-    // לברקוד-לכל-ארגז). ברקוד ישן (legacy) אינו ניתן להבחנה ולכן נספר לפי מונה בלבד.
-    if (parsed.kind === "indexed" && scans.some((v) => parseBox(v).idx === parsed.idx)) {
+    // ארגז שכבר נסרק — מונעים ספירה כפולה של אותו ארגז. חוסמים גם ערך זהה מדויק
+    // (כולל מדבקת legacy שנושאת מספר הזמנה בלבד) וגם אותו אינדקס בפורמט הייחודי,
+    // כדי שלא ניתן יהיה לעבור את השער בסריקת/הקלדת אותה מדבקה שוב ושוב.
+    const alreadyScanned =
+      scans.includes(value) ||
+      (parsed.kind === "indexed" && scans.some((v) => parseBox(v).idx === parsed.idx));
+    if (alreadyScanned) {
       playScanError();
       setFeedback({ type: "error", msg: t("boxScanDuplicate") });
       logScan("box_duplicate", value);

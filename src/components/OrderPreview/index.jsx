@@ -146,19 +146,19 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
     };
 
     useEffect(() => {
-        if (order && maxVisibleItems > 0) {
-            // במצב השלמת חוסרים ממיינים את *כל* הרשימה כך שהפריטים שיש ללקט כעת
-            // ראשונים (כדי שלא ייחתכו), ורק אז חותכים לשורות הנראות.
-            // במצב רגיל נשמרת ההתנהגות המקורית בדיוק: חיתוך ואז מיון לפי ברקוד.
+        // במצב השלמת חוסרים הטבלה נגללת ומציגה את כל הפריטים, ולכן אינה תלויה
+        // ב-maxVisibleItems (ששולט רק בחיתוך ה-preview הרגיל).
+        if (order && (maxVisibleItems > 0 || isShortageCompletion)) {
+            // במצב השלמת חוסרים מציגים את *כל* הפריטים (הטבלה נגללת), ממוינים כך
+            // שהפריטים שיש ללקט כעת ראשונים. במצב רגיל נשמרת ההתנהגות המקורית בדיוק:
+            // חיתוך לשורות הנראות ואז מיון לפי ברקוד.
             let visibleCart;
             if (isShortageCompletion) {
                 const prio = { repick: 0, approved: 1, done: 2 };
-                visibleCart = [...relevantCart]
-                    .sort((a, b) => {
-                        const d = prio[getItemStatus(a).kind] - prio[getItemStatus(b).kind];
-                        return d !== 0 ? d : String(a.barcode).localeCompare(String(b.barcode));
-                    })
-                    .slice(0, maxVisibleItems);
+                visibleCart = [...relevantCart].sort((a, b) => {
+                    const d = prio[getItemStatus(a).kind] - prio[getItemStatus(b).kind];
+                    return d !== 0 ? d : String(a.barcode).localeCompare(String(b.barcode));
+                });
             } else {
                 visibleCart = relevantCart
                     .slice(0, maxVisibleItems)
@@ -240,9 +240,9 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                         {getWordString(language, "shortageCompletionPreview")}
                     </div>
                 )}
-                <div className="flex-1 p-3 overflow-hidden" ref={tableContainerRef}>
-                    <div className="relative h-full">
-                        <div className="h-full overflow-hidden">
+                <div className={`flex-1 p-3 ${isShortageCompletion ? "overflow-y-auto" : "overflow-hidden"}`} ref={tableContainerRef}>
+                    <div className={isShortageCompletion ? "relative" : "relative h-full"}>
+                        <div className={isShortageCompletion ? "" : "h-full overflow-hidden"}>
                             <Table
                                 columns={columns}
                                 dataSource={data}
@@ -276,7 +276,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                 )}
                             />
                         </div>
-                        {relevantCart.length > 0 && (
+                        {!isShortageCompletion && relevantCart.length > 0 && (
                             <div className="absolute -bottom-[2px] left-0 right-0 h-32 bg-gradient-to-t from-white to-transparent flex items-end justify-center pointer-events-none">
                                 <div className="bg-mainColor-superLight bg-opacity-70 text-mainColor px-4 py-2 rounded-full text-xs
                                 font-medium mb-2 shadow-sm">

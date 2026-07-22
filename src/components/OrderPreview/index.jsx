@@ -97,22 +97,75 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
         }
     }, [order, language, isOpen]);
 
-    // מצב השלמת חוסרים: ההזמנה חזרה ממסך החוסרים, ורק הפריטים שסומנו "החזרה
-    // להשלמת ליקוט" רלוונטיים. הצגת העגלה המלאה כאן מטעה — המלקט מצפה ללקט הכל
-    // ואז מגלה שהתור מכיל פריט אחד.
+    // מצב השלמת חוסרים: ההזמנה חזרה ממסך החוסרים לאחר הכרעת המנהל. מציגים כאן את
+    // *כל* פריטי ההזמנה עם הסטטוס של כל אחד (טופל / אושר חוסר / חזר לליקוט), כדי
+    // שהמלקט יראה את התמונה המלאה. הליקוט בפועל עדיין עובר רק על פריטי ה-repick.
     const isShortageCompletion = !!order?.shortageHold?.resolvedAt;
-    const repickIds = (order?.repickItems || []).map(String);
-    const relevantCart =
-        isShortageCompletion && repickIds.length > 0
-            ? (order?.cart || []).filter((it) => repickIds.includes(String(it.id ?? it._id)))
-            : order?.cart || [];
+    const repickSet = new Set((order?.repickItems || []).map(String));
+    // רצפת הליקוט: כמה נלקט לכל שורה בסבב הראשון. נכתבת בשרת (shortageHold.pickedQuantities),
+    // ומכילה ערך לכל שורה — picked==ordered לפריט שלוקט במלואו.
+    const pickedFloor = order?.shortageHold?.pickedQuantities || {};
+    const relevantCart = order?.cart || [];
+
+    // סטטוס פריט במסך השלמת החוסרים. נגזר מ-repickItems ומרצפת הליקוט בלבד
+    // (בלי תלות ב-shortageResolution): פריט ב-repick חזר לליקוט; פריט שלוקט חלקית
+    // ולא חזר לליקוט — החוסר בו אושר; פריט שלוקט במלואו — טופל.
+    const getItemStatus = (item) => {
+        const key = String(item.id ?? item._id);
+        const required = Number(item.quantity) || 0;
+        const floor = Number(pickedFloor[key] ?? 0);
+        if (repickSet.has(key)) {
+            if (floor > 0 && floor < required) {
+                return {
+                    kind: "repick",
+                    label: getWordString(language, "statusRepickPartial")
+                        .replace("{picked}", floor)
+                        .replace("{remaining}", required - floor),
+                };
+            }
+            return { kind: "repick", label: getWordString(language, "statusRepickNow") };
+        }
+        if (floor < required) {
+            return { kind: "approved", label: getWordString(language, "statusShortageApproved") };
+        }
+        return { kind: "done", label: getWordString(language, "statusHandled") };
+    };
+
+    const statusBadgeClass = {
+        repick: "bg-red-100 text-red-700 border border-red-300",
+        approved: "bg-gray-100 text-gray-600 border border-gray-300",
+        done: "bg-green-100 text-green-700 border border-green-300",
+    };
+    const renderStatusBadge = (item) => {
+        const s = getItemStatus(item);
+        return (
+            <span className={`inline-block px-2 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusBadgeClass[s.kind]}`}>
+                {s.label}
+            </span>
+        );
+    };
 
     useEffect(() => {
         if (order && maxVisibleItems > 0) {
-            // הצגת המוצרים לפי המקום הפנוי במסך
-            const visibleCart = relevantCart.slice(0, maxVisibleItems);
+            // במצב השלמת חוסרים ממיינים את *כל* הרשימה כך שהפריטים שיש ללקט כעת
+            // ראשונים (כדי שלא ייחתכו), ורק אז חותכים לשורות הנראות.
+            // במצב רגיל נשמרת ההתנהגות המקורית בדיוק: חיתוך ואז מיון לפי ברקוד.
+            let visibleCart;
+            if (isShortageCompletion) {
+                const prio = { repick: 0, approved: 1, done: 2 };
+                visibleCart = [...relevantCart]
+                    .sort((a, b) => {
+                        const d = prio[getItemStatus(a).kind] - prio[getItemStatus(b).kind];
+                        return d !== 0 ? d : String(a.barcode).localeCompare(String(b.barcode));
+                    })
+                    .slice(0, maxVisibleItems);
+            } else {
+                visibleCart = relevantCart
+                    .slice(0, maxVisibleItems)
+                    .sort((a, b) => String(a.barcode).localeCompare(String(b.barcode)));
+            }
             setData(
-                visibleCart.sort((a, b) => String(a.barcode).localeCompare(String(b.barcode))).map((item, index) => {
+                visibleCart.map((item) => {
                     const barcode = item.barcode || "";
                     const productTitle = language === "hebrew" ? item.title?.he : item.title?.en;
                     return {
@@ -130,6 +183,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                             />
                         ),
                         quantity: item.quantity,
+                        statusCell: isShortageCompletion ? renderStatusBadge(item) : null,
                     };
                 })
             );
@@ -149,6 +203,10 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
             title: words.quantity,
             dataIndex: "quantity",
         },
+        // עמודת סטטוס — רק במסך השלמת חוסרים
+        ...(isShortageCompletion
+            ? [{ title: getWordString(language, "statusColHeader"), dataIndex: "statusCell" }]
+            : []),
     ];
 
     const handleContinueToOrder = () => {

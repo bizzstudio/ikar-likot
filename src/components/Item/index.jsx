@@ -160,6 +160,20 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     () => (isShortageCompletion ? (order?.repickItems || []).map(String) : []),
     [isShortageCompletion, order]
   );
+  // הנחיה למלקט לפי הכרעת המנהל: אם הוחזר פריט לליקוט (repick) — יש ללקט את החסר;
+  // אם כל החוסרים אושרו (approve/approve_hide, ואין repick) — רק לסרוק ארגזים ולסיים.
+  const shortageCompletionMsg = repickItems.length > 0
+    ? t("shortageCompletionRepick")
+    : t("shortageCompletionApproved");
+  const repickSet = useMemo(() => new Set(repickItems), [repickItems]);
+  // "רצפה": הכמות שכבר נלקטה בסבב הראשון לפריט שהוחזר להשלמה (חוסר חלקי). נשמרת
+  // בשרת ב-shortageHold.pickedQuantities. משמשת פעמיים: (1) לקזז מהכמות הנדרשת כך
+  // שהמלקט ילקט רק את החסר ולא את הכל מחדש; (2) להוסיף בסגירה לכמות הכוללת שנשלחת
+  // לשרת (הבסיס לחיוב). ריק לפריט שאינו repick / מחוץ למצב השלמה.
+  const floorOf = (pid) =>
+    repickSet.has(String(pid))
+      ? Number(order?.shortageHold?.pickedQuantities?.[pid]) || 0
+      : 0;
   // סריקת הארגזים מאומתת בשרת (boxScanVerifiedAt); boxScanDone מאפשר להמשיך מיד
   // אחרי אימות מוצלח בלי לרענן את ההזמנה מהשרת.
   const [boxScanDone, setBoxScanDone] = useState(false);
@@ -175,7 +189,9 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     return m;
   }, [order]);
 
-  const reqOf = (pid) => cartByPid[pid]?.quantity || 0;
+  // הכמות הנדרשת. בהשלמת חוסרים לפריט repick מקזזים את מה שכבר נלקט (הרצפה), כך
+  // שהמלקט מתבקש ללקט רק את הכמות החסרה (למשל 4 מתוך 9) ולא את כל הכמות מחדש.
+  const reqOf = (pid) => Math.max(0, (cartByPid[pid]?.quantity || 0) - floorOf(pid));
   const pickedOf = (pid) => pickedQuantities[pid] || 0;
   const isDone = (pid) => !!shortageItems[pid] || pickedOf(pid) >= reqOf(pid);
 
@@ -263,6 +279,15 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (isShortageCompletion && repickItems.length > 0) {
       short = { ...short };
       repickItems.forEach((pid) => delete short[pid]);
+      // בכניסה ראשונה להשלמה (טרם נסרקו הארגזים) מאפסים את מונה הליקוט של פריטי
+      // ה-repick ל-0, כדי שהמלקט ילקט רק את הכמות החסרה (reqOf כבר מקזז את הרצפה,
+      // והרצפה תתווסף בחזרה בסגירה). אחרי סריקת הארגזים (boxScanVerifiedAt חתום)
+      // שומרים את ההתקדמות מ-likutProgress כדי לא לאבד ליקוט חלקי אם המלקט רענן/
+      // יצא וחזר באמצע ההשלמה. הרצפה עצמה נשמרת בשרת (shortageHold) ואינה נדרסת.
+      if (!order.boxScanVerifiedAt) {
+        picked = { ...picked };
+        repickItems.forEach((pid) => { picked[pid] = 0; });
+      }
     }
 
     setPickedQuantities(picked);
@@ -694,7 +719,11 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       const pickedItems = order.cart
         .map((item) => {
           const pid = productIdStr(item);
-          return { _id: item._id, id: pid, quantity: pickedQuantities[pid] || 0 };
+          // בהשלמת חוסרים פריט repick נספר מ-0 (הכמות החסרה בלבד); מוסיפים חזרה את
+          // הרצפה שנלקטה בסבב הראשון כדי לשלוח לשרת את הכמות הכוללת (הבסיס לחיוב).
+          // floorOf מחזיר 0 מחוץ למצב השלמה / לפריט שאינו repick — התנהגות רגילה.
+          const quantity = (pickedQuantities[pid] || 0) + floorOf(pid);
+          return { _id: item._id, id: pid, quantity };
         })
         .filter((item) => item.quantity > 0);
 
@@ -859,10 +888,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
           )}
         </div>
 
-        {/* באנר מצב השלמת חוסרים — כדי שיהיה ברור שזו לא הזמנה רגילה */}
+        {/* באנר מצב השלמת חוסרים — הנחיה מפורשת לפי הכרעת המנהל (ליקוט מחדש / אושר) */}
         {isShortageCompletion && (
           <div className="mb-4 rounded-lg bg-orange-100 text-orange-800 px-3 py-2 text-sm font-bold text-center">
-            {t("shortageCompletionBanner")}
+            {shortageCompletionMsg}
           </div>
         )}
 

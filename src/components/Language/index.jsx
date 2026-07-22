@@ -95,6 +95,8 @@ const LA = {
     approve: "อนุมัติ",
     // ---- การเติมสินค้าขาด (shortage completion) ----
     shortageCompletionBanner: "การเติมสินค้าขาด — คำสั่งซื้อนี้ยังไม่ถูกเรียกเก็บเงิน",
+    shortageCompletionRepick: "ต้องหยิบสินค้าที่ขาดแล้วปิดคำสั่งซื้อ",
+    shortageCompletionApproved: "อนุมัติสินค้าขาดแล้ว — สแกนกล่องแล้วปิดคำสั่งซื้อ",
     orderMovedToShortages: "คำสั่งซื้อมีสินค้าขาด — รอการอนุมัติจากผู้จัดการ ยังไม่เรียกเก็บเงิน",
     // ---- ความล้มเหลวในการสร้างงานจัดส่ง (LionWheel) ----
     shipmentFailedTitle: "การส่งข้อมูลไปยังบริษัทขนส่งล้มเหลว",
@@ -110,6 +112,7 @@ const LA = {
     boxScanFieldLabel: "ช่องบาร์โค้ดกล่อง — สแกนเลย",
     boxScanOk: "กล่องถูกต้อง",
     boxScanWrongOrder: "กล่องนี้เป็นของคำสั่งซื้ออื่น",
+    boxScanDuplicate: "สแกนกล่องนี้ไปแล้ว",
     boxScanContinue: "ดำเนินการต่อ",
     boxScanAllDone: "สแกนกล่องครบแล้ว",
     boxScanTooFast: "สแกนเร็วเกินไป — รอสักครู่ระหว่างกล่อง",
@@ -270,6 +273,8 @@ const LA = {
     approve: "Approve",
     // ---- Shortage completion flow ----
     shortageCompletionBanner: "Shortage completion — this order has not been charged yet",
+    shortageCompletionRepick: "Pick the missing item and finish the order",
+    shortageCompletionApproved: "Shortage approved — scan the boxes and finish the order",
     orderMovedToShortages: "The order has shortages — waiting for manager approval. No charge was made.",
     // ---- Shipment creation failure (LionWheel) ----
     shipmentFailedTitle: "Sending the delivery to the courier company failed",
@@ -285,6 +290,7 @@ const LA = {
     boxScanFieldLabel: "Box barcode field — scan now",
     boxScanOk: "Box confirmed",
     boxScanWrongOrder: "This box belongs to a different order",
+    boxScanDuplicate: "This box was already scanned",
     boxScanContinue: "Continue",
     boxScanAllDone: "All boxes have already been scanned",
     boxScanTooFast: "Scanned too fast — wait a moment between boxes",
@@ -445,6 +451,9 @@ const LA = {
     approve: "אישור",
     // ---- זרימת השלמת חוסרים ----
     shortageCompletionBanner: "השלמת חוסרים — ההזמנה טרם חויבה",
+    // הנחיה דינמית לפי הכרעת המנהל: repick → יש ללקט; אושר → רק לסרוק ולסיים
+    shortageCompletionRepick: "יש ללקט את המוצר החסר ולסיים הזמנה",
+    shortageCompletionApproved: "החוסר אושר — סרוק את הארגזים וסיים הזמנה",
     orderMovedToShortages: "בהזמנה יש חוסרים — היא ממתינה לאישור המנהל ולא חויבה",
     // ---- כשל ביצירת משימת המשלוח (ליונוויל) ----
     shipmentFailedTitle: "שליחת המשלוח לחברת השליחויות נכשלה",
@@ -460,6 +469,7 @@ const LA = {
     boxScanFieldLabel: "שדה ברקוד ארגז — סרוק עכשיו",
     boxScanOk: "ארגז אושר",
     boxScanWrongOrder: "הארגז שייך להזמנה אחרת",
+    boxScanDuplicate: "הארגז הזה כבר נסרק",
     boxScanContinue: "המשך",
     boxScanAllDone: "כל הארגזים כבר נסרקו",
     boxScanTooFast: "סריקה מהירה מדי — יש להמתין רגע בין ארגז לארגז",

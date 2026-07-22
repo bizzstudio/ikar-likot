@@ -6,9 +6,10 @@
 // בסיום הליקוט הראשון) לפני שהוא ממשיך. המטרה: לוודא שכל ארגזי ההזמנה נאספו
 // לפני שמוסיפים אליהם פריטים — מניעת פיצול הזמנות והכנסת פריט להזמנה לא נכונה.
 //
-// מגבלה מודעת: הברקוד מקודד את מספר ההזמנה בלבד (לפי האפיון), ולכן אי אפשר
-// להבחין בין סריקת N ארגזים שונים לבין סריקת אותו ארגז N פעמים. האימות מונע
-// ערבוב בין הזמנות — לא ספירה כפולה של אותו ארגז.
+// כל ארגז נושא ברקוד ייחודי "<מספר הזמנה>-<אינדקס>" (מדבקת הביניים). הסריקה
+// מוודאת שכל N הארגזים נאספו: סריקת אותו ארגז פעמיים מזוהה כ"כבר נסרק" ואינה
+// נספרת, וכך מונעים גם ערבוב בין הזמנות וגם ספירה כפולה של אותו ארגז. ברקוד ישן
+// (מספר הזמנה בלבד, מדבקות שהודפסו לפני המעבר) עדיין נתמך — אך בלי הבחנה בין ארגזים.
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { FaBoxOpen, FaCheckCircle, FaExclamationTriangle } from "react-icons/fa";
@@ -54,6 +55,21 @@ export default function BoxScanGate({
 
   const expected = Math.max(1, Number(expectedBoxes) || 1);
   const orderBarcode = normalizeBarcode(order?.invoice);
+
+  // מזהה הארגז מתוך הברקוד:
+  //   פורמט חדש "<מספר הזמנה>-<אינדקס>" (ברקוד ייחודי לכל ארגז) → { kind:"indexed", idx }
+  //   פורמט ישן (מספר הזמנה בלבד, מדבקות שהודפסו לפני המעבר) → { kind:"legacy" }
+  //   כל דבר אחר (הזמנה אחרת / אינדקס מחוץ לטווח) → { kind:"invalid" }
+  const parseBox = (value) => {
+    if (!value) return { kind: "invalid" };
+    if (value === orderBarcode) return { kind: "legacy" };
+    const m = value.match(/^(.+)-(\d+)$/);
+    if (m && m[1] === orderBarcode) {
+      const idx = parseInt(m[2], 10);
+      if (idx >= 1 && idx <= expected) return { kind: "indexed", idx };
+    }
+    return { kind: "invalid" };
+  };
 
   // פוקוס אוטומטי לסורק החומרה, כמו במסך הליקוט.
   // awaitingNextBox חייב להיות בתלויות: סריקה מוצלחת מסירה את שדה הקלט מה-DOM,
@@ -101,10 +117,20 @@ export default function BoxScanGate({
     }
     lastScanRef.current = now;
 
-    if (value !== orderBarcode) {
+    const parsed = parseBox(value);
+    if (parsed.kind === "invalid") {
       playScanError();
       setFeedback({ type: "error", msg: `${t("boxScanWrongOrder")} (${value})` });
       logScan("box_mismatch", value);
+      return;
+    }
+
+    // ארגז ייחודי שכבר נסרק — מונעים ספירה כפולה של אותו ארגז (הסיבה למעבר
+    // לברקוד-לכל-ארגז). ברקוד ישן (legacy) אינו ניתן להבחנה ולכן נספר לפי מונה בלבד.
+    if (parsed.kind === "indexed" && scans.some((v) => parseBox(v).idx === parsed.idx)) {
+      playScanError();
+      setFeedback({ type: "error", msg: t("boxScanDuplicate") });
+      logScan("box_duplicate", value);
       return;
     }
 

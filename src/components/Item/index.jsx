@@ -686,32 +686,11 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     try {
       const fullValue = statuses.find((status) => status._id === melaketId);
 
-      const isOrderAlreadyTaken = await axios
-        .get(`${API}/app/orders/${order._id}`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-        })
-        .then((res) => {
-          // "כבר הושלמה" = כל סטטוס שאינו אחד משלבי הביניים. מאז שסיום הליקוט
-          // מעביר ל-"הזמנה הושלמה" (Delivered), גם Delivered נחשב כמושלם — ולכן
-          // הוסר מרשימת שלבי הביניים כאן (אחרת לא היינו מזהים הזמנה שכבר הושלמה).
-          if (
-            res.data.status.name !== "Cancel" &&
-            res.data.status.name !== "Pending" &&
-            res.data.status.name !== "Likut" &&
-            res.data.status.name !== "Processing"
-          ) {
-            return true;
-          }
-          return false;
-        })
-        .catch(() => true);
-
-      if (isOrderAlreadyTaken) {
-        alert(t("alreadyDone"));
-        nav("/items");
-        window.location.reload();
-        return;
-      }
+      // בדיקת "האם ההזמנה כבר הושלמה" הוסרה מכאן: היא הייתה סבב רשת שלם לפני כל
+      // סגירת הזמנה, בשכפול מדויק של הבדיקה שהשרת עושה ממילא בתחילת
+      // send-and-update / finalize. השרת מחזיר במקרה כזה שגיאה עם הדגל
+      // alreadyCompleted, והטיפול בה נמצא ב-catch של הקריאה עצמה.
+      // (הבדיקה הישנה גם פירשה תקלת רשת כ"כבר הושלמה" ועצרה סגירה תקינה.)
 
       // בניית pickedItems לפי הכמות שנלקטה בפועל
       // id = מזהה השורה (מבחין בין ווריאנטים/מתנות של אותו מוצר), _id נשמר
@@ -757,6 +736,24 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         );
       } catch (error) {
         console.error("error :>> ", error);
+        // המסך מיושן וההזמנה כבר עברה את מסך החוסרים — הסיום שלה עובר דרך
+        // finalize. טעינה מחדש של אותו מסך מכניסה את האפליקציה למצב השלמת
+        // חוסרים, ולכן כאן דווקא לא מנווטים לרשימה. בלי זה המלקט היה נתקע
+        // בלולאה: כל לחיצה חוזרת פונה שוב לאותו מסלול שגוי.
+        if (error?.response?.data?.requiresFinalize) {
+          alert(serverMessage(error.response.data, language) || t("errorUpdateOrder"));
+          window.location.reload();
+          return;
+        }
+        // ההזמנה כבר נסגרה / ממתינה לאישור חוסרים — אין מה לעשות במסך הזה.
+        // מציגים את הודעת השרת וחוזרים לרשימה עם טעינה מחדש (מחליף את בדיקת
+        // ה-GET המקדימה שהייתה כאן לפני השליחה).
+        if (error?.response?.data?.alreadyCompleted) {
+          alert(serverMessage(error.response.data, language) || t("alreadyDone"));
+          nav("/items");
+          window.location.reload();
+          return;
+        }
         // כישלון חיוב בסגירה הסופית (402) — ההזמנה **לא** נסגרה. מציגים את הודעת
         // השרת כדי שהמלקט ידע לפנות למנהל ולא יחשוב שההזמנה יצאה.
         alert(serverMessage(error?.response?.data, language) || t("errorUpdateOrder"));

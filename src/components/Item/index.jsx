@@ -1,7 +1,9 @@
 // meshek_Likut_system/src/components/Item/index.jsx
 // מסך ליקוט מונחה פריט-אחר-פריט (אפיון "אפיון שינויים לתהליך ליקוט").
-// עקרונות: מוצג פריט אחד בכל פעם, שדה ברקוד בפוקוס אוטומטי, כל סריקה תקינה +1,
-// חריגה מעל הכמות נחסמת, אפשר לדלג (הפריט חוזר בהמשך), ובאישור מיוחד לסמן בחוסר.
+// עקרונות: מוצג פריט אחד בכל פעם, שדה ברקוד בפוקוס אוטומטי, כל סריקה תקינה +1
+// והשלמת הכמות מקפיצה לפריט הבא, שדה כמות קבוע וריק מעל אזור הסריקה (למוצר ללא
+// ברקוד / תיקון), חריגה מעל הכמות נחסמת, אפשר לדלג (הפריט חוזר בהמשך), ובאישור
+// מיוחד לסמן בחוסר.
 // שדה מספר הארגזים מוצג רק במסך הסיום. לוגיקת ה-handleDone נשמרה 1:1 מהגרסה הקודמת.
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -42,6 +44,10 @@ const IMG_PLACEHOLDER =
 // משמש להשתקת רעש בלבד (צלילי שגיאה / רישומי scan-log כפולים); ההגנה על ספירת
 // הכמות עצמה היא awaitingNextUnit.
 const CAMERA_SAME_CODE_MUTE_MS = 1500;
+
+// אורך מרבי של ערך שנחשב "כמות" בשדה הכמות. מעבר לזה מדובר בברקוד שנקלט בטעות
+// לתוך השדה (ברקודי EAN/UPC הם 8–13 ספרות; כמות בהזמנת מזון לא מתקרבת לזה).
+const QTY_MAX_DIGITS = 5;
 
 // נרמול ברקוד להשוואה — עקבי עם lib/normalizeBarcode בבקנד (בלי הסרת אפסים מובילים)
 const normalizeBarcode = (v) =>
@@ -100,8 +106,16 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const [feedback, setFeedback] = useState(null); // { type: 'success'|'error', msg }
   const [showList, setShowList] = useState(false);
   const [shortageModal, setShortageModal] = useState(false);
-  const [qtyEntry, setQtyEntry] = useState(false); // שדה הזנת כמות אינליין פעיל
+  // שדה הכמות מוצג **תמיד** מעל אזור הסריקה. מתחיל ריק — אין כפתור שפותח אותו
+  // ואין "0" מוקדם שצריך למחוק. אחרי סריקה בפריט שדורש יותר מיחידה אחת הוא
+  // מתמלא בכמות שנסרקה עד כה (1, 2, ...) כדי שאפשר יהיה לתקן אותה ישירות.
   const [qtyValue, setQtyValue] = useState("");
+  // האם הפוקוס נמצא בשדה הכמות. קריטי: סורק החומרה "מקליד" לתוך האלמנט הממוקד,
+  // ולכן כל עוד המלקט מקליד כמות אסור לקלוט סריקות ואסור לגזול לו את הפוקוס.
+  // חסימת הסריקה נקשרת לפוקוס בלבד ולא לקיום טקסט בשדה: כמות שהוקלדה ונזנחה
+  // בלי אישור הייתה חוסמת כל סריקה **בשקט**, וזה נקרא כ"הסורק הפסיק לעבוד".
+  // סריקה מוצלחת פשוט מנקה את הערך הנטוש (ראו handleBarcode).
+  const [qtyFocused, setQtyFocused] = useState(false);
   // שער בין-יחידתי למצב מצלמה: אחרי סריקה שהעלתה את הכמות ועדיין חסרות יחידות,
   // נדרש אישור אנושי מפורש לפני הסריקה הבאה. בלעדיו החזקת מוצר **אחד** מול
   // המצלמה מעלה את המונה לבדה עד הכמות הנדרשת — והכמות הזו היא הבסיס לחיוב
@@ -418,20 +432,24 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     // needsBoxScan: שער סריקת הארגזים מנהל פוקוס משלו — אסור לגזול לו אותו.
     // awaitingNextUnit חייב להיות גם בתלויות ולא רק בתנאי: השער מסיר את שדה
     // הקלט מה-DOM, ובלי הרצה חוזרת אחרי סגירתו הסורק היה מאבד פוקוס.
-    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled && !needsBoxScan && !awaitingNextUnit) {
+    if (!showList && !shortageModal && !qtyFocused && !shortagePrompt && !allHandled && !needsBoxScan && !awaitingNextUnit) {
       const el = barcodeInputRef.current;
       // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
       // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
       if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
     }
-  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner, needsBoxScan, awaitingNextUnit]);
+    // qtyFocused בתלויות במכוון: ביציאה משדה הכמות הפוקוס חוזר לשדה הברקוד,
+    // אחרת סורק החומרה היה נשאר "מנותק" עד שהמלקט ילחץ ידנית על השדה.
+  }, [currentPid, showList, shortageModal, qtyFocused, shortagePrompt, allHandled, hasScanner, needsBoxScan, awaitingNextUnit]);
 
   // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט.
   // גם שער היחידה הבאה והשתקת המצלמה שייכים לפריט הקודם ומתאפסים איתו, אחרת
   // המלקט היה נוחת על פריט חדש עם שער פתוח שאין לו שום קשר אליו.
+  // שדה הכמות מתאפס איתם: כמות ששייכת לפריט אחד לעולם לא תיגרר לפריט הבא.
   useEffect(() => {
     setShortagePrompt(null);
     setAwaitingNextUnit(false);
+    setQtyValue("");
     lastCameraCodeRef.current = { code: "", at: 0 };
   }, [currentPid]);
 
@@ -476,10 +494,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
-  // fromCamera מבחין בין פענוח מתמשך של המצלמה לבין סריקת סורק חומרה/הקלדה ידנית.
-  const handleBarcode = (raw, fromCamera = false) => {
+  // fromCamera  — פענוח מתמשך של המצלמה (להבדיל מסורק חומרה / הקלדה ידנית).
+  // fromQtyField — הברקוד נקלט בטעות בתוך שדה הכמות ומנותב לכאן במפורש, ולכן
+  //                אסור לחסום אותו על סמך qtyFocused (שהוא אמת בדיוק ברגע הזה).
+  const handleBarcode = (raw, { fromCamera = false, fromQtyField = false } = {}) => {
     // אין קליטת סריקה בזמן הזנת כמות/מודל/הצעת חוסר/המתנה לאישור היחידה הבאה
-    if (qtyEntry || shortageModal || shortagePrompt || awaitingNextUnit) return;
+    if ((qtyFocused && !fromQtyField) || shortageModal || shortagePrompt || awaitingNextUnit) return;
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
     const now = Date.now();
@@ -511,18 +531,25 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         logScan("over_quantity", currentItem._id, scanned, cur);
         return;
       }
-      // סריקה תקינה → +1 אוטומטית, בלי שדה כמות ובלי אישור. המלקט פשוט סורק.
+      // סריקה תקינה → +1 אוטומטית, בלי אישור. המלקט פשוט סורק.
       const next = cur + 1;
       const nextPicked = { ...pickedQuantities, [currentPid]: next };
       persistPicked(nextPicked);
       playScanSuccess();
       logScan("valid", currentItem._id, scanned, next);
       if (next >= req) {
-        // הושלמה הכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
+        // הושלמה הכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל.
+        // שדה הכמות מתאפס כדי שהפריט הבא יתחיל נקי (גם אפקט currentPid מנקה).
+        setQtyValue("");
         const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
         persistIndex(findNextPendingIdx(currentIndex, doneFn));
         setFeedback(null);
       } else {
+        // הפריט דורש יותר מיחידה אחת ועוד חסרות יחידות → ממלאים בשדה הכמות את
+        // מה שנסרק עד כה (למשל "1"), כדי שאפשר יהיה פשוט לתקן אותו לכמות
+        // הסופית ולאשר במקום לסרוק כל יחידה בנפרד. השדה **לא** נכנס לפוקוס:
+        // פוקוס אוטומטי היה מפנה אליו את הקלדת סורק החומרה.
+        setQtyValue(String(next));
         // "2 מתוך 5" ולא "2/5": ה-feedback מוצג כמחרוזת בתוך פסקה RTL, ותו "/"
         // ניטרלי מבחינת כיווניות (אותה מלכודת שכבר תועדה במונה הארגזים).
         setFeedback({
@@ -555,7 +582,22 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   const handleCameraScan = (barcode) => {
-    handleBarcode(barcode, true);
+    handleBarcode(barcode, { fromCamera: true });
+  };
+
+  // Enter בשדה הכמות. מקרה נפוץ עכשיו כששדה הכמות קבוע על המסך: הפוקוס נמצא בו
+  // והמלקט לוחץ על הדק הסורק — סורק החומרה "מקליד" את הברקוד לתוך השדה ומסיים
+  // ב-Enter. מספר באורך ברקוד אינו כמות סבירה (ובוודאי חורג מהנדרש), ולכן
+  // מנתבים אותו לטיפול בסריקה במקום להקפיץ "הכמות חורגת מהנדרש".
+  const submitQtyField = () => {
+    const raw = String(qtyValue).trim();
+    if (raw.length > QTY_MAX_DIGITS) {
+      setQtyValue("");
+      handleBarcode(raw, { fromQtyField: true });
+      barcodeInputRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    confirmQty();
   };
 
   // אישור אנושי מפורש שהמלקט עבר ליחידה הבאה. מאפס גם את השתקת המצלמה, אחרת
@@ -568,7 +610,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // ---- הבא: מעבר לפריט הבא ברשימה הקבועה (חץ קדימה) — לא משנה את סדר הרשימה ----
   const goNext = () => {
     if (queue.length < 2) return;
-    setQtyEntry(false); // סוגרים שדה כמות פתוח כדי שלא יחול על פריט אחר
+    setQtyValue(""); // מנקים כמות שהוקלדה ולא אושרה כדי שלא תחול על פריט אחר
     persistIndex((currentIndex + 1) % queue.length);
     setFeedback(null);
   };
@@ -576,7 +618,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // ---- קודם: מעבר לפריט הקודם ברשימה הקבועה (חץ אחורה) — לא משנה את סדר הרשימה ----
   const goPrev = () => {
     if (queue.length < 2) return;
-    setQtyEntry(false);
+    setQtyValue("");
     persistIndex((currentIndex - 1 + queue.length) % queue.length);
     setFeedback(null);
   };
@@ -585,29 +627,20 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const jumpToItem = (pid) => {
     const idx = queue.indexOf(pid);
     if (idx < 0) return;
-    setQtyEntry(false);
+    setQtyValue("");
     persistIndex(idx);
     setShowList(false);
   };
 
-  // ---- הזנת כמות אינליין (אפיון §4) ----
-  // נפתחת רק ידנית מכפתור "כמות" (מוצר ללא ברקוד / תיקון כמות). לא חלון קופץ.
-  // השדה נפתח **ריק** במכוון: מילוי מראש של הכמות הנוכחית (למשל "0") אילץ את
-  // המלקט למחוק אותה לפני כל הקלדה.
-  const openManual = () => {
-    if (!currentPid) return;
-    setQtyValue("");
-    // הזנה ידנית היא פעולה אנושית מפורשת — היא מחליפה את שער היחידה הבאה
-    confirmNextUnit();
-    setQtyEntry(true);
-  };
+  // ---- אישור הכמות שהוקלדה בשדה הקבוע ----
+  // אין כאן "פתיחה" של שדה: השדה קיים תמיד, ריק, מעל אזור הסריקה.
   const confirmQty = () => {
     if (!currentPid) return;
     const pid = currentPid;
     const req = reqOf(pid);
     const val = parseInt(qtyValue, 10);
     if (!Number.isFinite(val) || val < 0) {
-      setQtyEntry(false); // ריק/לא תקין → ביטול בלי שינוי
+      setQtyValue(""); // ריק/לא תקין → ביטול בלי שינוי
       return;
     }
     // חריגה מעבר לנדרש נחסמת (מצב קצה)
@@ -618,7 +651,13 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const nextPicked = { ...pickedQuantities, [pid]: val };
     persistPicked(nextPicked);
     logScan("manual", currentItem?._id, currentItem?.barcode, val);
-    setQtyEntry(false);
+    setQtyValue("");
+    // החזרת הפוקוס לשדה הברקוד: אחרי Enter הפוקוס נשאר בשדה הכמות, והסריקה
+    // הבאה של סורק החומרה הייתה נוחתת שוב בתוך שדה הכמות. ה-focus גורר blur
+    // ומאפס גם את qtyFocused.
+    barcodeInputRef.current?.focus({ preventScroll: true });
+    // הזנת כמות היא פעולה אנושית מפורשת — היא מייתרת את שער היחידה הבאה
+    confirmNextUnit();
     setFeedback(null);
     if (val >= req) {
       // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
@@ -649,7 +688,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
   const openShortage = () => {
-    setQtyEntry(false); // סוגרים שדה כמות פתוח אם יש
+    setQtyValue(""); // מנקים כמות שהוקלדה ולא אושרה
     confirmNextUnit(); // סימון בחוסר מייתר את ההמתנה ליחידה הבאה
     setShortageModal(true);
   };
@@ -1091,45 +1130,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
               </div>
             )}
 
-            {qtyEntry ? (
-              /* ---- הזנת כמות אינליין (אחרי סריקה / ידני) — לא חלון קופץ ---- */
-              <div className="p-4 border-t bg-mainColor-light/10">
-                <label className="block text-sm font-bold text-gray-700 mb-1">
-                  {t("pickedQty")} — {t("requiredQty")}: {reqOf(currentPid)}
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="number"
-                    min={0}
-                    max={reqOf(currentPid)}
-                    autoFocus
-                    value={qtyValue}
-                    onChange={(e) => setQtyValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        confirmQty();
-                      }
-                    }}
-                    dir="ltr"
-                    className="flex-1 rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
-                    placeholder="0"
-                  />
-                  <button
-                    onClick={confirmQty}
-                    className="rounded-lg bg-mainColor px-5 text-white font-bold"
-                  >
-                    {t("approve")}
-                  </button>
-                  <button
-                    onClick={() => setQtyEntry(false)}
-                    className="rounded-lg border border-gray-300 px-4 text-gray-700"
-                  >
-                    {t("close")}
-                  </button>
-                </div>
-              </div>
-            ) : shortagePrompt && shortagePrompt.pid === currentPid ? (
+            {shortagePrompt && shortagePrompt.pid === currentPid ? (
               /* ---- אחרי אישור כמות חלקית: הצעה לסמן את היתרה בחוסר ---- */
               <div className="p-4 border-t bg-orange-50">
                 <div className="flex items-center gap-2 text-orange-700 font-bold mb-3">
@@ -1154,15 +1155,49 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
             ) : (
               /* מצב מצלמה (ברירת מחדל) או מצב סורק-חומרה בלבד — נקבע פר-מכשיר */
               <div className="p-4 border-t bg-gray-50">
-                {/* כפתור הזנת כמות — מעל אזור הסריקה, נגיש בלחיצה אחת (מוצר ללא
-                    ברקוד / תיקון כמות). הסריקה הרגילה כבר מעלה +1 לבדה. */}
-                <button
-                  type="button"
-                  onClick={openManual}
-                  className="w-full mb-3 rounded-lg border-2 border-mainColor bg-white py-2 font-bold text-mainColor flex items-center justify-center gap-2"
-                >
-                  <FaKeyboard /> {t("manualQtyUpdate")}
-                </button>
+                {/* שדה הכמות — קבוע מעל אזור הסריקה, מתחיל ריק, בלי כפתור פותח
+                    ובלי "0" מוקדם. הסריקה הרגילה ממשיכה להעלות +1 לבדה; השדה
+                    נועד למוצר ללא ברקוד, לשקילה ולתיקון כמות. */}
+                <div className="mb-3 rounded-lg border-2 border-mainColor bg-white p-3">
+                  <label className="flex items-center gap-1 text-sm font-bold text-gray-700 mb-1">
+                    <FaKeyboard className="text-mainColor" />
+                    {t("pickedQty")} — {t("requiredQty")}: {reqOf(currentPid)}
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={reqOf(currentPid)}
+                      inputMode="numeric"
+                      value={qtyValue}
+                      onChange={(e) => setQtyValue(e.target.value)}
+                      onFocus={(e) => {
+                        setQtyFocused(true);
+                        // בחירת התוכן הקיים: אחרי סריקה יש בשדה "1", והקלדה
+                        // פשוט מחליפה אותו במקום לחייב מחיקה ידנית קודם.
+                        e.target.select();
+                      }}
+                      onBlur={() => setQtyFocused(false)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          submitQtyField();
+                        }
+                      }}
+                      dir="ltr"
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-gray-900 text-lg text-center"
+                      placeholder=""
+                    />
+                    <button
+                      type="button"
+                      onClick={confirmQty}
+                      disabled={qtyValue === ""}
+                      className="rounded-lg bg-mainColor px-5 text-white font-bold disabled:opacity-40"
+                    >
+                      {t("approve")}
+                    </button>
+                  </div>
+                </div>
                 {awaitingNextUnit ? (
                   /* שער בין-יחידתי (מצלמה בלבד): המצלמה מוסרת מה-DOM עד לאישור
                      אנושי, כדי שמוצר שנשאר מול העדשה לא ימשיך להעלות את המונה. */
@@ -1184,7 +1219,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                       <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
                         <BarcodeScanner
                           onScan={handleCameraScan}
-                          paused={showList || shortageModal || qtyEntry}
+                          paused={showList || shortageModal}
                           playSoundOnScan={false}
                           style={{ height: "100%", width: "100%" }}
                         />

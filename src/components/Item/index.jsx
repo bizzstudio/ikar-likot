@@ -45,9 +45,11 @@ const IMG_PLACEHOLDER =
 // הכמות עצמה היא awaitingNextUnit.
 const CAMERA_SAME_CODE_MUTE_MS = 1500;
 
-// אורך מרבי של ערך שנחשב "כמות" בשדה הכמות. מעבר לזה מדובר בברקוד שנקלט בטעות
-// לתוך השדה (ברקודי EAN/UPC הם 8–13 ספרות; כמות בהזמנת מזון לא מתקרבת לזה).
-const QTY_MAX_DIGITS = 5;
+// ערך מרבי שנחשב "כמות" בשדה הכמות. מעליו מדובר בברקוד שנקלט בטעות לתוך השדה
+// (EAN-13/EAN-8 מייצרים מספרים בני 8–13 ספרות; כמות בהזמנת מזון לא מתקרבת לזה).
+// ההשוואה על **הערך המספרי** ולא על אורך המחרוזת, כדי ש-"000005" ייקרא כ-5
+// ולא ייחשב בטעות לברקוד בגלל אפסים מובילים.
+const QTY_MAX_VALUE = 99999;
 
 // נרמול ברקוד להשוואה — עקבי עם lib/normalizeBarcode בבקנד (בלי הסרת אפסים מובילים)
 const normalizeBarcode = (v) =>
@@ -141,6 +143,23 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   const barcodeInputRef = useRef(null);
   const qtyInputRef = useRef(null);
+
+  // מקור האמת ל"האם הפוקוס בשדה הכמות" הוא ה-DOM ולא דגל state.
+  // דגל state נתקע על true כששדה הכמות מוסר מה-DOM בזמן שהפוקוס בתוכו (הצעת
+  // חוסר / מסך סיום), או כששדה הברקוד אינו מרונדר ולכן אין למי להעביר את
+  // הפוקוס (שער היחידה הבאה) — React אינו משגר blur על אלמנט שהוסר, ואז
+  // **כל סריקה נחסמת לצמיתות** והמלקט תקוע בלי דרך מובנת להשתחרר.
+  // בדיקת activeElement לא יכולה להיתקע.
+  const isQtyFocused = () =>
+    !!qtyInputRef.current && document.activeElement === qtyInputRef.current;
+
+  // סיום הזנת כמות: blur מפורש משדה הכמות (מסנכרן גם את qtyFocused), ואז
+  // החזרת הפוקוס לשדה הברקוד אם הוא מרונדר, כדי שסורק החומרה ימשיך לעבוד.
+  const endQtyEntry = () => {
+    qtyInputRef.current?.blur();
+    barcodeInputRef.current?.focus({ preventScroll: true });
+  };
+
   const lastScanRef = useRef(0);
   // הברקוד האחרון שהמצלמה ראתה + מועד הצפייה האחרונה (ראו CAMERA_SAME_CODE_MUTE_MS)
   const lastCameraCodeRef = useRef({ code: "", at: 0 });
@@ -434,14 +453,20 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     // needsBoxScan: שער סריקת הארגזים מנהל פוקוס משלו — אסור לגזול לו אותו.
     // awaitingNextUnit חייב להיות גם בתלויות ולא רק בתנאי: השער מסיר את שדה
     // הקלט מה-DOM, ובלי הרצה חוזרת אחרי סגירתו הסורק היה מאבד פוקוס.
-    if (!showList && !shortageModal && !qtyFocused && !shortagePrompt && !allHandled && !needsBoxScan && !awaitingNextUnit) {
+    if (!showList && !shortageModal && !isQtyFocused() && !shortagePrompt && !allHandled && !needsBoxScan && !awaitingNextUnit) {
       const el = barcodeInputRef.current;
       // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
       // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
-      if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
+      // ה-cleanup חובה: בלעדיו טיימר שנקבע רגע לפני שהמלקט נגע בשדה הכמות היה
+      // יורה 60ms אחר כך וגוזל לו את הפוקוס באמצע ההקלדה.
+      if (el) {
+        const timer = setTimeout(() => el.focus({ preventScroll: true }), 60);
+        return () => clearTimeout(timer);
+      }
     }
-    // qtyFocused בתלויות במכוון: ביציאה משדה הכמות הפוקוס חוזר לשדה הברקוד,
-    // אחרת סורק החומרה היה נשאר "מנותק" עד שהמלקט ילחץ ידנית על השדה.
+    // qtyFocused בתלויות במכוון: הוא הטריגר לריצה חוזרת ביציאה משדה הכמות, כדי
+    // שהפוקוס יחזור לשדה הברקוד ולא ישאיר את סורק החומרה "מנותק". הבדיקה עצמה
+    // נעשית מול ה-DOM (isQtyFocused) ולכן דגל תקוע אינו יכול לחסום את השחזור.
   }, [currentPid, showList, shortageModal, qtyFocused, shortagePrompt, allHandled, hasScanner, needsBoxScan, awaitingNextUnit]);
 
   // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט.
@@ -498,10 +523,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
   // fromCamera  — פענוח מתמשך של המצלמה (להבדיל מסורק חומרה / הקלדה ידנית).
   // fromQtyField — הברקוד נקלט בטעות בתוך שדה הכמות ומנותב לכאן במפורש, ולכן
-  //                אסור לחסום אותו על סמך qtyFocused (שהוא אמת בדיוק ברגע הזה).
+  //                אסור לחסום אותו על סמך isQtyFocused (שהוא אמת בדיוק ברגע הזה).
   const handleBarcode = (raw, { fromCamera = false, fromQtyField = false } = {}) => {
     // אין קליטת סריקה בזמן הזנת כמות/מודל/הצעת חוסר/המתנה לאישור היחידה הבאה
-    if ((qtyFocused && !fromQtyField) || shortageModal || shortagePrompt || awaitingNextUnit) return;
+    if ((isQtyFocused() && !fromQtyField) || shortageModal || shortagePrompt || awaitingNextUnit) return;
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
     const now = Date.now();
@@ -593,10 +618,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // מנתבים אותו לטיפול בסריקה במקום להקפיץ "הכמות חורגת מהנדרש".
   const submitQtyField = () => {
     const raw = String(qtyValue).trim();
-    if (raw.length > QTY_MAX_DIGITS) {
+    if (raw !== "" && Number(raw) > QTY_MAX_VALUE) {
       setQtyValue("");
       handleBarcode(raw, { fromQtyField: true });
-      barcodeInputRef.current?.focus({ preventScroll: true });
+      endQtyEntry();
       return;
     }
     confirmQty();
@@ -654,10 +679,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     persistPicked(nextPicked);
     logScan("manual", currentItem?._id, currentItem?.barcode, val);
     setQtyValue("");
-    // החזרת הפוקוס לשדה הברקוד: אחרי Enter הפוקוס נשאר בשדה הכמות, והסריקה
-    // הבאה של סורק החומרה הייתה נוחתת שוב בתוך שדה הכמות. ה-focus גורר blur
-    // ומאפס גם את qtyFocused.
-    barcodeInputRef.current?.focus({ preventScroll: true });
+    // יציאה מפורשת משדה הכמות: אחרי Enter הפוקוס נשאר בו, והסריקה הבאה של סורק
+    // החומרה הייתה נוחתת שוב בתוכו. blur מפורש (ולא רק focus על שדה הברקוד)
+    // חיוני כי שדה הברקוד אינו מרונדר בזמן שער היחידה הבאה.
+    endQtyEntry();
     // הזנת כמות היא פעולה אנושית מפורשת — היא מייתרת את שער היחידה הבאה
     confirmNextUnit();
     setFeedback(null);
@@ -1167,6 +1192,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                   </label>
                   <div className="flex gap-2">
                     <input
+                      ref={qtyInputRef}
                       type="number"
                       min={0}
                       max={reqOf(currentPid)}

@@ -35,6 +35,14 @@ const IMG_PLACEHOLDER =
     "<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><rect width='96' height='96' fill='#f3f4f6'/><g fill='none' stroke='#9ca3af' stroke-width='3'><circle cx='34' cy='34' r='7'/><path d='M18 72l22-24 14 16 10-10 14 14'/></g></svg>"
   );
 
+// חלון השתקה לסריקת מצלמה חוזרת של **אותו** ברקוד (ms). המצלמה מפענחת מחדש כל
+// ~600ms (SCANNER_LOCK_AFTER_SCAN_MS) כל עוד המדבקה בפריים, ולכן מוצר שנשאר מול
+// העדשה מייצר זרם סריקות זהות. הזמן נמדד מ*הצפייה* האחרונה ולא מהספירה האחרונה,
+// כך שהחסימה נמשכת כל עוד המוצר בפריים ומשתחררת רק אחרי שהוצא ממנו.
+// משמש להשתקת רעש בלבד (צלילי שגיאה / רישומי scan-log כפולים); ההגנה על ספירת
+// הכמות עצמה היא awaitingNextUnit.
+const CAMERA_SAME_CODE_MUTE_MS = 1500;
+
 // נרמול ברקוד להשוואה — עקבי עם lib/normalizeBarcode בבקנד (בלי הסרת אפסים מובילים)
 const normalizeBarcode = (v) =>
   String(v ?? "").trim().replace(/\s+/g, "").toUpperCase();
@@ -94,6 +102,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const [shortageModal, setShortageModal] = useState(false);
   const [qtyEntry, setQtyEntry] = useState(false); // שדה הזנת כמות אינליין פעיל
   const [qtyValue, setQtyValue] = useState("");
+  // שער בין-יחידתי למצב מצלמה: אחרי סריקה שהעלתה את הכמות ועדיין חסרות יחידות,
+  // נדרש אישור אנושי מפורש לפני הסריקה הבאה. בלעדיו החזקת מוצר **אחד** מול
+  // המצלמה מעלה את המונה לבדה עד הכמות הנדרשת — והכמות הזו היא הבסיס לחיוב
+  // הלקוח. אותה חולשה כבר תוקנה בשער סריקת הארגזים (BoxScanGate).
+  // רלוונטי אך ורק לסריקות מהמצלמה: בסורק חומרה כל לחיצת הדק היא סריקה מכוונת.
+  const [awaitingNextUnit, setAwaitingNextUnit] = useState(false);
   // הצעת חוסר חלקי — נדלקת רק אחרי אישור כמות הקטנה מהנדרש: { pid, missing }
   const [shortagePrompt, setShortagePrompt] = useState(null);
 
@@ -112,6 +126,8 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   const barcodeInputRef = useRef(null);
   const lastScanRef = useRef(0);
+  // הברקוד האחרון שהמצלמה ראתה + מועד הצפייה האחרונה (ראו CAMERA_SAME_CODE_MUTE_MS)
+  const lastCameraCodeRef = useRef({ code: "", at: 0 });
   // סימון שההזמנה כבר הושלמה (handleDone) — מונע מ-PATCH ההתקדמות ה-debounced
   // לרוץ אחרי הניווט ולהחיות מצב ישן. מחזיק גם את מזהה ה-timer לביטול מיידי.
   const completedRef = useRef(false);
@@ -399,18 +415,24 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
   // פוקוס אוטומטי על שדה הברקוד (לסורק חומרה) בכל מעבר פריט / סגירת מודל
   useEffect(() => {
-    // needsBoxScan: שער סריקת הארגזים מנהל פוקוס משלו — אסור לגזול לו אותו
-    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled && !needsBoxScan) {
+    // needsBoxScan: שער סריקת הארגזים מנהל פוקוס משלו — אסור לגזול לו אותו.
+    // awaitingNextUnit חייב להיות גם בתלויות ולא רק בתנאי: השער מסיר את שדה
+    // הקלט מה-DOM, ובלי הרצה חוזרת אחרי סגירתו הסורק היה מאבד פוקוס.
+    if (!showList && !shortageModal && !qtyEntry && !shortagePrompt && !allHandled && !needsBoxScan && !awaitingNextUnit) {
       const el = barcodeInputRef.current;
       // preventScroll: מחזיק פוקוס לסורק החומרה בלי לגלול את הדף מטה בטעינה
       // (אחרת הדפדפן גולל את שדה הברקוד לתצוגה ומסתיר את הלוגו/תמונה/תיאור).
       if (el) setTimeout(() => el.focus({ preventScroll: true }), 60);
     }
-  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner, needsBoxScan]);
+  }, [currentPid, showList, shortageModal, qtyEntry, shortagePrompt, allHandled, hasScanner, needsBoxScan, awaitingNextUnit]);
 
-  // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט
+  // הצעת החוסר החלקי שייכת לפריט הנוכחי בלבד — מתאפסת בכל מעבר פריט.
+  // גם שער היחידה הבאה והשתקת המצלמה שייכים לפריט הקודם ומתאפסים איתו, אחרת
+  // המלקט היה נוחת על פריט חדש עם שער פתוח שאין לו שום קשר אליו.
   useEffect(() => {
     setShortagePrompt(null);
+    setAwaitingNextUnit(false);
+    lastCameraCodeRef.current = { code: "", at: 0 };
   }, [currentPid]);
 
   // ניקוי חיווי אחרי זמן קצר (מספיק להבין, בלי לחסום עבודה)
@@ -454,12 +476,26 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   // ---- טיפול בסריקה מול הפריט הנוכחי ----
-  const handleBarcode = (raw) => {
-    if (qtyEntry || shortageModal || shortagePrompt) return; // אין קליטת סריקה בזמן הזנת כמות/מודל/הצעת חוסר
+  // fromCamera מבחין בין פענוח מתמשך של המצלמה לבין סריקת סורק חומרה/הקלדה ידנית.
+  const handleBarcode = (raw, fromCamera = false) => {
+    // אין קליטת סריקה בזמן הזנת כמות/מודל/הצעת חוסר/המתנה לאישור היחידה הבאה
+    if (qtyEntry || shortageModal || shortagePrompt || awaitingNextUnit) return;
     const scanned = normalizeBarcode(raw);
     if (!scanned) return;
-    // מניעת קליטה כפולה מהירה
     const now = Date.now();
+
+    // מצלמה: אותו ברקוד שנשאר בפריים מפוענח שוב ושוב. משתיקים בשקט (בלי צליל
+    // שגיאה ובלי רישום) עד שהוא יוצא מהפריים. הזמן מתעדכן בכל צפייה, גם חסומה.
+    if (fromCamera) {
+      const seen = lastCameraCodeRef.current;
+      if (seen.code === scanned && now - seen.at < CAMERA_SAME_CODE_MUTE_MS) {
+        seen.at = now;
+        return;
+      }
+      lastCameraCodeRef.current = { code: scanned, at: now };
+    }
+
+    // מניעת קליטה כפולה מהירה
     if (now - lastScanRef.current < 400) return;
     lastScanRef.current = now;
 
@@ -468,11 +504,34 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
     const matchesCurrent = itemMatchesBarcode(currentItem, scanned);
     if (matchesCurrent) {
-      // סריקה תקינה → אישור קולי, תיעוד, ופתיחת שדה כמות אינליין (לא חלון קופץ)
+      const req = reqOf(currentPid);
+      // חריגה מעל הכמות הנדרשת נחסמת (הפריט כבר הושלם)
+      if (cur >= req) {
+        flashError(t("overQuantityMsg"));
+        logScan("over_quantity", currentItem._id, scanned, cur);
+        return;
+      }
+      // סריקה תקינה → +1 אוטומטית, בלי שדה כמות ובלי אישור. המלקט פשוט סורק.
+      const next = cur + 1;
+      const nextPicked = { ...pickedQuantities, [currentPid]: next };
+      persistPicked(nextPicked);
       playScanSuccess();
-      logScan("valid", currentItem._id, scanned, cur);
-      setQtyValue("");
-      setQtyEntry(true);
+      logScan("valid", currentItem._id, scanned, next);
+      if (next >= req) {
+        // הושלמה הכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
+        const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
+        persistIndex(findNextPendingIdx(currentIndex, doneFn));
+        setFeedback(null);
+      } else {
+        // "2 מתוך 5" ולא "2/5": ה-feedback מוצג כמחרוזת בתוך פסקה RTL, ותו "/"
+        // ניטרלי מבחינת כיווניות (אותה מלכודת שכבר תועדה במונה הארגזים).
+        setFeedback({
+          type: "success",
+          msg: `${t("scanValidMsg")} — ${next} ${t("ofWord")} ${req}`,
+        });
+        // עוד חסרות יחידות ובמצב מצלמה — עוצרים עד אישור אנושי (ראו awaitingNextUnit)
+        if (fromCamera) setAwaitingNextUnit(true);
+      }
       return;
     }
 
@@ -496,7 +555,14 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   const handleCameraScan = (barcode) => {
-    handleBarcode(barcode);
+    handleBarcode(barcode, true);
+  };
+
+  // אישור אנושי מפורש שהמלקט עבר ליחידה הבאה. מאפס גם את השתקת המצלמה, אחרת
+  // היחידה הבאה (אותו ברקוד בדיוק) הייתה מושתקת ולא נספרת.
+  const confirmNextUnit = () => {
+    lastCameraCodeRef.current = { code: "", at: 0 };
+    setAwaitingNextUnit(false);
   };
 
   // ---- הבא: מעבר לפריט הבא ברשימה הקבועה (חץ קדימה) — לא משנה את סדר הרשימה ----
@@ -525,10 +591,14 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   // ---- הזנת כמות אינליין (אפיון §4) ----
-  // נפתחת בסריקה תקינה (שדה ריק) או ידנית מהכפתור (למוצר ללא ברקוד). לא חלון קופץ.
+  // נפתחת רק ידנית מכפתור "כמות" (מוצר ללא ברקוד / תיקון כמות). לא חלון קופץ.
+  // השדה נפתח **ריק** במכוון: מילוי מראש של הכמות הנוכחית (למשל "0") אילץ את
+  // המלקט למחוק אותה לפני כל הקלדה.
   const openManual = () => {
     if (!currentPid) return;
-    setQtyValue(String(pickedOf(currentPid)));
+    setQtyValue("");
+    // הזנה ידנית היא פעולה אנושית מפורשת — היא מחליפה את שער היחידה הבאה
+    confirmNextUnit();
     setQtyEntry(true);
   };
   const confirmQty = () => {
@@ -580,6 +650,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // ---- סימון בחוסר (המלקט מאשר לבד; הפעולה נרשמת לבקרה) ----
   const openShortage = () => {
     setQtyEntry(false); // סוגרים שדה כמות פתוח אם יש
+    confirmNextUnit(); // סימון בחוסר מייתר את ההמתנה ליחידה הבאה
     setShortageModal(true);
   };
   const confirmShortage = () => {
@@ -1004,12 +1075,6 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                   {t("pickedQty")}: <b className="text-mainColor text-xl">{pickedOf(currentPid)}</b>{" "}
                   {t("ofWord")} {reqOf(currentPid)}
                 </p>
-                <button
-                  onClick={openManual}
-                  className="mt-2 inline-flex items-center gap-1 text-sm text-mainColor underline"
-                >
-                  <FaKeyboard /> {t("manualQtyUpdate")}
-                </button>
               </div>
             </div>
 
@@ -1089,46 +1154,69 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
             ) : (
               /* מצב מצלמה (ברירת מחדל) או מצב סורק-חומרה בלבד — נקבע פר-מכשיר */
               <div className="p-4 border-t bg-gray-50">
-                <label className="block text-sm font-bold text-gray-700 mb-1">
-                  {hasScanner ? t("scannerModeHardware") : t("scanFieldLabel")}
-                </label>
-                {/* המצלמה נטענת רק כשאין סורק חומרה. כשיש סורק — היא לא מרונדרת כלל,
-                    כך ה-stream נסגר ולולאת עיבוד התמונה לא רצה. */}
-                {!hasScanner && (
-                  <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
-                    <BarcodeScanner
-                      onScan={handleCameraScan}
-                      paused={showList || shortageModal || qtyEntry}
-                      playSoundOnScan={false}
-                      style={{ height: "100%", width: "100%" }}
-                    />
-                  </div>
-                )}
-                {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
-                <input
-                  ref={barcodeInputRef}
-                  type="text"
-                  value={barcodeValue}
-                  onChange={(e) => setBarcodeValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      submitBarcodeField();
-                    }
-                  }}
-                  dir="ltr"
-                  inputMode="none"
-                  className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
-                  placeholder="7290000000000"
-                />
-                {/* מתג פר-מכשיר: יש סורק חומרה → כיבוי המצלמה (חיסכון בסוללה/מסך/מהירות) */}
+                {/* כפתור הזנת כמות — מעל אזור הסריקה, נגיש בלחיצה אחת (מוצר ללא
+                    ברקוד / תיקון כמות). הסריקה הרגילה כבר מעלה +1 לבדה. */}
                 <button
                   type="button"
-                  onClick={toggleScanner}
-                  className="mt-2 text-xs font-bold text-gray-500 underline"
+                  onClick={openManual}
+                  className="w-full mb-3 rounded-lg border-2 border-mainColor bg-white py-2 font-bold text-mainColor flex items-center justify-center gap-2"
                 >
-                  {hasScanner ? t("enableCameraScanner") : t("disableCameraScanner")}
+                  <FaKeyboard /> {t("manualQtyUpdate")}
                 </button>
+                {awaitingNextUnit ? (
+                  /* שער בין-יחידתי (מצלמה בלבד): המצלמה מוסרת מה-DOM עד לאישור
+                     אנושי, כדי שמוצר שנשאר מול העדשה לא ימשיך להעלות את המונה. */
+                  <button
+                    type="button"
+                    onClick={confirmNextUnit}
+                    className="w-full rounded-full border-none bg-orange-500 py-3 px-6 font-bold text-base text-white"
+                  >
+                    {t("scanNextUnit")}
+                  </button>
+                ) : (
+                  <>
+                    <label className="block text-sm font-bold text-gray-700 mb-1">
+                      {hasScanner ? t("scannerModeHardware") : t("scanFieldLabel")}
+                    </label>
+                    {/* המצלמה נטענת רק כשאין סורק חומרה. כשיש סורק — היא לא מרונדרת כלל,
+                        כך ה-stream נסגר ולולאת עיבוד התמונה לא רצה. */}
+                    {!hasScanner && (
+                      <div className="overflow-hidden rounded-lg bg-gray-900 mb-2" style={{ height: 200 }}>
+                        <BarcodeScanner
+                          onScan={handleCameraScan}
+                          paused={showList || shortageModal || qtyEntry}
+                          playSoundOnScan={false}
+                          style={{ height: "100%", width: "100%" }}
+                        />
+                      </div>
+                    )}
+                    {/* שדה טקסט לסורק חומרה/בלוטות' — ממוקד תמיד, בלי מקלדת קופצת */}
+                    <input
+                      ref={barcodeInputRef}
+                      type="text"
+                      value={barcodeValue}
+                      onChange={(e) => setBarcodeValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          submitBarcodeField();
+                        }
+                      }}
+                      dir="ltr"
+                      inputMode="none"
+                      className="w-full rounded-lg border-2 border-mainColor px-3 py-2 text-gray-900 text-lg text-center"
+                      placeholder="7290000000000"
+                    />
+                    {/* מתג פר-מכשיר: יש סורק חומרה → כיבוי המצלמה (חיסכון בסוללה/מסך/מהירות) */}
+                    <button
+                      type="button"
+                      onClick={toggleScanner}
+                      className="mt-2 text-xs font-bold text-gray-500 underline"
+                    >
+                      {hasScanner ? t("enableCameraScanner") : t("disableCameraScanner")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
 

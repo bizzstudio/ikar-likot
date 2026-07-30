@@ -26,6 +26,7 @@ import spinnerLoadingImage from "/spinner.gif";
 import dayjs from "dayjs";
 import loginImg from "/loginImg.svg";
 import { playScanSuccess, playScanError } from "../../utils/soundFeedback";
+import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
 
 const API = import.meta.env.VITE_MAIN_SERVER_URL;
 
@@ -88,6 +89,9 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const { language } = useContext(languageContext);
   const nav = useNavigate();
   const t = (key) => getWordString(language, key);
+  // שם מוצר בשפת המלקט (תרגום אוטומטי עם מטמון), ותעתיק שם הלקוח
+  const productName = useProductName();
+  const { tPerson } = useDynamicTranslation();
 
   const [order, setOrder] = useState();
   const [statuses, setStatuses] = useState([]);
@@ -593,7 +597,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const other = allItems.find((i) => itemMatchesBarcode(i, scanned));
     const expectedName = itemName(currentItem); // שם הפריט הצפוי (§3.6)
     if (other) {
-      const otherName = language === "hebrew" ? other.title?.he : other.title?.en;
+      const otherName = itemName(other);
       flashError(`${t("scanWrongItem")}: ${otherName || ""} — ${t("expectedItem")}: ${expectedName}`);
       logScan("invalid", other._id, scanned, pickedOf(productIdStr(other)));
     } else {
@@ -962,7 +966,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   };
 
   // ---- תצוגה ----
-  const itemName = (it) => (language === "hebrew" ? it?.title?.he : it?.title?.en) || it?.title?.he || "";
+  const itemName = (it) => productName(it);
   const statusOf = (pid) => {
     if (shortageItems[pid]) return { key: "statusShortage", cls: "bg-orange-100 text-orange-700" };
     const p = pickedOf(pid);
@@ -1338,7 +1342,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         {/* פרטי לקוח + הערות */}
         <div className="mt-4 text-sm text-gray-600 leading-6">
           <p>
-            {t("name")}: {order?.user_info?.name} {order?.user_info?.lastName || ""}
+            {t("name")}: {tPerson(`${order?.user_info?.name || ""} ${order?.user_info?.lastName || ""}`.trim())}
           </p>
           <p>
             {t("phone")}: {order?.user_info?.contact}

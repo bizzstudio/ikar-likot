@@ -9,6 +9,7 @@ import Items from "./components/Items";
 import Item from "./components/Item";
 import Header from "./components/Header";
 import CurrentMelaket from "./components/CurrentMelaket";
+import { DynamicTranslationProvider } from "./i18n/DynamicTranslation";
 
 export const languageContext = createContext()
 
@@ -112,40 +113,42 @@ function App() {
 
   return (
     <languageContext.Provider value={{ language, setLanguage }}>
-      {location.pathname.includes("items") && (
-        <>
-          <CurrentMelaket />
-          <Header id={id} go={go} loading={loading} setLoading={setLoading} orders={orders} />
-        </>
-      )}
-      <main className="main">
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/items"
-            element={
-              <PrivateRoute>
-                <Items orders={orders} loading={loading} setLoading={setLoading} go={go} />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/items/:id"
-            element={
-              <PrivateRoute>
-                <Item
-                  orders={orders}
-                  setOrders={setOrders}
-                  setUpdateOrders={setUpdateOrders}
-                  setId={setId}
-                  loading={loading}
-                  setLoading={setLoading}
-                />
-              </PrivateRoute>
-            }
-          />
-        </Routes>
-      </main>
+      <DynamicTranslationProvider>
+        {location.pathname.includes("items") && (
+          <>
+            <CurrentMelaket />
+            <Header id={id} go={go} loading={loading} setLoading={setLoading} orders={orders} />
+          </>
+        )}
+        <main className="main">
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/items"
+              element={
+                <PrivateRoute>
+                  <Items orders={orders} loading={loading} setLoading={setLoading} go={go} />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/items/:id"
+              element={
+                <PrivateRoute>
+                  <Item
+                    orders={orders}
+                    setOrders={setOrders}
+                    setUpdateOrders={setUpdateOrders}
+                    setId={setId}
+                    loading={loading}
+                    setLoading={setLoading}
+                  />
+                </PrivateRoute>
+              }
+            />
+          </Routes>
+        </main>
+      </DynamicTranslationProvider>
     </languageContext.Provider>
   );
 }

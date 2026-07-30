@@ -3,11 +3,14 @@ import { languageContext } from "../../App";
 import { getWord, getWordString } from "../Language";
 import axios from "axios";
 import BarcodeScanner from "../BarcodeScanner";
+import { useProductName } from "../../i18n/DynamicTranslation";
 
 const BASE = import.meta.env.VITE_MAIN_SERVER_URL || "";
 
 export default function BarcodeStockModal({ isOpen, onClose, onSuccess, entryMode = "scan" }) {
   const { language } = useContext(languageContext);
+  // שם המוצר בשפת המלקט (תרגום אוטומטי עם מטמון)
+  const productName = useProductName();
   const t = (key) => getWordString(language, key);
 
   const [step, setStep] = useState("scan");
@@ -456,7 +459,7 @@ export default function BarcodeStockModal({ isOpen, onClose, onSuccess, entryMod
         {step === "quantity" && product && (
           <div className="space-y-4">
             <p className="font-medium text-gray-800">
-              {product?.title?.he || product?.title?.en || scannedBarcode}
+              {productName(product) || scannedBarcode}
             </p>
             <p className="text-sm text-gray-500">ברקוד: {scannedBarcode}</p>
             <label className="block text-sm font-medium text-gray-700">

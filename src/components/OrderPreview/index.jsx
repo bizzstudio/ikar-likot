@@ -8,9 +8,13 @@ import logo from "../../../public/logo.jpeg";
 import axios from "axios";
 import { FaTimes, FaCheckCircle } from "react-icons/fa";
 import dayjs from "dayjs";
+import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
 
 export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder }) {
     const { language } = useContext(languageContext);
+    // שם מוצר בשפת המלקט (תרגום אוטומטי עם מטמון), ותעתיק שם הלקוח
+    const productName = useProductName();
+    const { tPerson } = useDynamicTranslation();
     const nav = useNavigate();
     const tableContainerRef = useRef(null);
 
@@ -167,7 +171,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
             setData(
                 visibleCart.map((item) => {
                     const barcode = item.barcode || "";
-                    const productTitle = language === "hebrew" ? item.title?.he : item.title?.en;
+                    const productTitle = productName(item);
                     return {
                         key: item._id,
                         rowBarcode: barcode,
@@ -188,7 +192,8 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                 })
             );
         }
-    }, [maxVisibleItems, order, language]);
+        // productName משתנה כשמגיעים תרגומים חדשים — בלעדיו הטבלה נתקעת על עברית
+    }, [maxVisibleItems, order, language, productName]);
 
     const columns = [
         {
@@ -260,7 +265,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                             </button>
 
                                             <p className="mb-1 leading-6">
-                                                {words.name.props.children}: {order?.user_info?.name} {order?.user_info?.lastName || ''}
+                                                {words.name.props.children}: {tPerson(`${order?.user_info?.name || ''} ${order?.user_info?.lastName || ''}`.trim())}
                                             </p>
                                             <p className="mb-1 leading-6"> {words.phone.props.children}: {order?.user_info?.contact}</p>
                                             <p className="mb-1 leading-6"> {words.id.props.children}: {order.invoice}</p>

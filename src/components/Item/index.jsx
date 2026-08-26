@@ -32,6 +32,7 @@ import {
   isLineFulfilled,
   formatWeight,
 } from "../../utils/weightPricing";
+import { sortCartByPickingOrder } from "../../utils/pickingOrder";
 
 const API = import.meta.env.VITE_MAIN_SERVER_URL;
 
@@ -325,9 +326,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (!order?.cart) return;
     const id = numberOfOrder.id;
 
-    // סדר תצוגה קבוע: לפי ברקוד. דטרמיניסטי — נשמר זהה בכל טעינה, ולא משתנה בניווט.
-    let stableOrder = [...order.cart]
-      .sort((a, b) => String(a.barcode || "").localeCompare(String(b.barcode || "")))
+    // סדר תצוגה קבוע: **לפי סדר הליקוט של המוצר** (likutOrder), כלומר לפי סדר
+    // המדפים בחנות — src/utils/pickingOrder.js. קודם לכן המיון היה לפי ברקוד,
+    // מספר שאין לו שום קשר למיקום הפיזי, והמלקטת הלכה הלוך ושוב בין המדפים.
+    // הברקוד נשאר שובר-השוויון, ולכן הסדר עדיין דטרמיניסטי: זהה בכל טעינה ובכל
+    // מכשיר, וזה תנאי לכך שהמצביע השמור (currentIndex) יצביע על אותו פריט.
+    let stableOrder = sortCartByPickingOrder(order.cart)
       .map((it) => productIdStr(it))
       .filter(Boolean);
 
@@ -391,7 +395,17 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (isShortageCompletion) {
       const fp = stableOrder.findIndex((pid) => !doneFn(pid));
       startIdx = fp >= 0 ? fp : 0;
-    } else if (savedIdx != null && savedIdx >= 0 && savedIdx < stableOrder.length) {
+    } else if (
+      savedIdx != null &&
+      savedIdx >= 0 &&
+      savedIdx < stableOrder.length &&
+      // המצביע השמור מכובד רק אם הוא מצביע על פריט שטרם טופל. הוא נשמר כמספר
+      // מקום בתור, ולכן כל שינוי בסדר התור מזיז אותו לפריט אחר — למשל מלקטת
+      // שהייתה באמצע הזמנה כשעודכן סדר הליקוט של מוצר, או כשהמיון עצמו שונה.
+      // הכמויות שנלקטו נשמרות לפי מזהה מוצר ולא לפי מקום, כך שלא אובד דבר; מה
+      // שנמנע כאן הוא חזרה לפריט שכבר לוקט במקום להמשיך מהמקום שנעצר.
+      !doneFn(stableOrder[savedIdx])
+    ) {
       startIdx = savedIdx;
     } else {
       const fp = stableOrder.findIndex((pid) => !doneFn(pid));

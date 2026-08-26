@@ -12,7 +12,8 @@ import loginImg from "/loginImg.svg"
 import OrderPreview from "../OrderPreview";
 import BarcodeStockModal from "../BarcodeStockModal";
 import { FiCamera } from "react-icons/fi";
-import { sortOrdersByDeliveryArea, compareByInvoice, isAreaStart } from "../../utils/deliveryAreaSort";
+import { sortOrdersByDeliveryArea, sortOrdersByPickupSlot, isAreaStart } from "../../utils/likutQueueSort";
+import { formatStoreDateTime } from "../../utils/storeTime";
 
 import dayjs from 'dayjs';
 import 'dayjs/locale/he'; // ייבוא תמיכת השפה העברית
@@ -59,6 +60,21 @@ export default function Items({ orders, loading, setLoading, go }) {
     );
   };
 
+
+  // מועד האיסוף מוצג באותו מבנה דו-שורתי של עמודת השעה, אבל בשעון החנות:
+  // זו פגישה עם לקוח בשעה מסוימת, ומכשיר עם אזור זמן שגוי היה מכין את ההזמנה
+  // בשעה הלא נכונה. מועד חסר או פגום מחזיר null, והעמודה מציגה "—".
+  const renderPickupSlot = (value) => {
+    const slot = formatStoreDateTime(value);
+    if (!slot) return null;
+    return (
+      <div className="time">
+        {slot.date}
+        <br />
+        {slot.time}
+      </div>
+    );
+  };
 
   const shipment = getWord('shipment')?.props?.children;
   const selfCollected = getWord('selfCollected')?.props?.children;
@@ -111,10 +127,21 @@ export default function Items({ orders, loading, setLoading, go }) {
   };
 
   const columns = [
-    {
-      title: getWord('address'),
-      dataIndex: "city",
-    },
+    // בלשונית האיסוף העצמי אין משמעות לכתובת — הלקוח מגיע לחנות, ומה שהמלקט
+    // צריך לדעת הוא מתי ההזמנה נדרשת. לכן העמודה הראשונה שם היא מועד האיסוף
+    // שהלקוח בחר, ולא כתובתו. לא מדובר בעמודה נוספת: מועד האיסוף הוצג קודם
+    // בעמודה נפרדת בסוף השורה, והשארתה כאן הייתה מכפילה את אותו נתון.
+    shippingStatus === 'selfCollecting'
+      ? {
+        title: getWord('pickupTime'),
+        dataIndex: "pickupSlot",
+        // הזמנות שנוצרו לפני שמועדי האיסוף הונהגו אינן נושאות מועד כלל.
+        render: (value) => value || "—",
+      }
+      : {
+        title: getWord('address'),
+        dataIndex: "city",
+      },
     {
       title: getWord('id'),
       dataIndex: "number",
@@ -133,15 +160,6 @@ export default function Items({ orders, loading, setLoading, go }) {
       title: getWord('createAt'),
       dataIndex: "createAt",
     },
-    // מועד האיסוף מוצג רק בלשונית האיסוף העצמי — בהזמנות משלוח אין מועד כזה,
-    // ועמודה ריקה הייתה רק גוזלת רוחב במסך הצר של המלקט.
-    ...(shippingStatus === 'selfCollecting'
-      ? [{
-        title: getWord('pickupTime'),
-        dataIndex: "pickupSlot",
-        render: (value) => value || "—",
-      }]
-      : []),
   ];
 
   useEffect(() => {
@@ -199,15 +217,13 @@ export default function Items({ orders, loading, setLoading, go }) {
 
   useEffect(() => {
     if (shippingStatus) {
-      // סדר התור: הזמנות המשלוח מקובצות לפי אזור גאוגרפי (כל עיר ברצף) ולא לפי
-      // סדר הקליטה באתר — src/utils/deliveryAreaSort.js. באיסוף עצמי אין כתובת
-      // לקבץ לפיה, ולכן שם נשאר מיון לפי מספר הזמנה.
-      // ה-|| [] אינו קישוט: פריסה של undefined זורקת, ומסך הליקוט כולו היה נופל
-      // לבן אם shippings היה מגיע חלקי (ערך ישן ב-sessionStorage, סדר עדכונים אחר).
+      // סדר התור — שני מדדים שונים לשתי הלשוניות (src/utils/likutQueueSort.js):
+      // במשלוחים קיבוץ לפי אזור גאוגרפי (כל עיר ברצף), ובאיסוף עצמי לפי מועד
+      // האיסוף שהלקוח בחר — שם השאלה היא מתי הלקוח מגיע, לא לאן נוסעים.
       const sourceOrders =
         shippingStatus === "deliver"
           ? sortOrdersByDeliveryArea(shippings.deliver)
-          : [...(shippings.selfCollecting || [])].sort(compareByInvoice);
+          : sortOrdersByPickupSlot(shippings.selfCollecting);
 
       setData(
         sourceOrders
@@ -222,7 +238,8 @@ export default function Items({ orders, loading, setLoading, go }) {
               createAt: formatDate(item.createdAt),
               // מועד האיסוף שהלקוח בחר (איסוף עצמי בלבד). הזמנות שנוצרו לפני
               // שהמועדים הוצגו, וכל הזמנות המשלוח, יגיעו בלי הערך הזה.
-              pickupSlot: item.pickupSlot ? formatDate(item.pickupSlot) : null,
+              // נקרא בשעון החנות ולא בשעון המכשיר — src/utils/storeTime.js.
+              pickupSlot: renderPickupSlot(item.pickupSlot),
               status: item.status,
               actualMelaket: item.actualMelaket,
               // פותחת קבוצת עיר חדשה — מצייר קו מפריד דק, כדי שהרצף הגאוגרפי

@@ -1,19 +1,20 @@
-// src/utils/deliveryAreaSort.test.mjs
+// src/utils/likutQueueSort.test.mjs
 /* eslint-env node */
 //
-// אימות סדר התור בליקוט (deliveryAreaSort.js).
+// אימות סדר התור בליקוט (likutQueueSort.js).
 //
 // למה זה נבדק ולא נראה בעין: התרחישים ששוברים את הקיבוץ הם בדיוק אלה שלא
 // מזוהים במבט על המסך — עיר שנשמרה פעם עם מחוז ופעם בלי, שם עיר עם רווח נגרר,
 // והזמנה בלי כתובת בכלל. בכל אחד מהם הרשימה נראית "כמעט מסודרת", ורק ספירה
 // מגלה שרמלה מופיעה בשני מקומות.
 //
-// הרצה:  node src/utils/deliveryAreaSort.test.mjs
+// הרצה:  node src/utils/likutQueueSort.test.mjs
 import {
   sortOrdersByDeliveryArea,
+  sortOrdersByPickupSlot,
   compareByInvoice,
   isAreaStart,
-} from "./deliveryAreaSort.js";
+} from "./likutQueueSort.js";
 
 let pass = 0;
 const failures = [];
@@ -135,6 +136,30 @@ check("מיון של רשימה ממוינת מחזיר אותה תוצאה",
 check("מיון של הרשימה ההפוכה מחזיר אותה תוצאה",
   invoicesOf(sortOrdersByDeliveryArea([...messy].reverse())), once);
 check("כל עיר נשארה רצף אחד", isContiguous(sortOrdersByDeliveryArea(messy)), true);
+
+console.log("=== 10. לשונית האיסוף העצמי — לפי מועד האיסוף ===");
+// כאן השאלה אינה לאן נוסעים אלא מתי הלקוח מגיע: הזמנה של 16:00 אינה קודמת
+// להזמנה של 11:00 רק משום שנקלטה קודם.
+const pk = (invoice, slot) => ({ invoice, pickupSlot: slot });
+const slots = [
+  pk(101, "2026-08-27T16:00:00+03:00"),
+  pk(102, "2026-08-27T11:00:00+03:00"),
+  pk(103, "2026-08-26T15:00:00+03:00"),
+];
+check("המוקדם ביותר ראשון", invoicesOf(sortOrdersByPickupSlot(slots)), [103, 102, 101]);
+check("המערך המקורי לא שונה", invoicesOf(slots), [101, 102, 103]);
+
+// הזמנות שנוצרו לפני שמועדי האיסוף הונהגו — לסוף, אחרת הן דוחקות את הקרובים
+const withBlanks = [pk(201, null), pk(202, "2026-08-27T11:00:00+03:00"), pk(203, undefined), pk(204, "לא-תאריך")];
+check("חסרי מועד ומועד פגום בסוף", invoicesOf(sortOrdersByPickupSlot(withBlanks)), [202, 201, 203, 204]);
+check("ביניהם — לפי מספר הזמנה", invoicesOf(sortOrdersByPickupSlot([pk(9, null), pk(3, null), pk(10, null)])), [3, 9, 10]);
+check("אותו מועד — נשבר לפי מספר הזמנה",
+  invoicesOf(sortOrdersByPickupSlot([pk(20, "2026-08-27T11:00:00+03:00"), pk(7, "2026-08-27T11:00:00+03:00")])), [7, 20]);
+// אותו רגע מוחלט בשני ייצוגים — ההשוואה אינה תלויה באזור זמן
+check("היסט מול UTC — אותו רגע",
+  invoicesOf(sortOrdersByPickupSlot([pk(1, "2026-08-27T08:00:00Z"), pk(2, "2026-08-27T11:00:00+03:00")])), [1, 2]);
+check("רשימה ריקה", sortOrdersByPickupSlot([]), []);
+check("undefined", sortOrdersByPickupSlot(undefined), []);
 
 console.log("");
 if (failures.length) {

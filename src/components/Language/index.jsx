@@ -392,7 +392,7 @@ const LA = {
     numOfBoxes: "מספר ארגזים",
     back: "אחורה",
     total: "סכום",
-    selfCollected: "קליטת סחורה",
+    selfCollected: "איסוף עצמי",
     shipment: "משלוחים",
     choseMelaket: 'בסיום יש לבחור את שם המלקט',
     leaveOrder: "נטישת הזמנה",

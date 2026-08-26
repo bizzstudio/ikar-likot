@@ -9,6 +9,7 @@ import axios from "axios";
 import { FaTimes, FaCheckCircle } from "react-icons/fa";
 import dayjs from "dayjs";
 import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
+import { formatLineQuantity } from "../../utils/weightPricing";
 
 export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder }) {
     const { language } = useContext(languageContext);
@@ -186,7 +187,11 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                 alt={productTitle}
                             />
                         ),
-                        quantity: item.quantity,
+                        // מוצר שקיל — הכמות היא ק"ג. ראו utils/weightPricing.
+                        quantity: formatLineQuantity(
+                            item,
+                            language === "thai" ? "th" : language === "en" ? "en" : "he"
+                        ),
                         statusCell: isShortageCompletion ? renderStatusBadge(item) : null,
                     };
                 })

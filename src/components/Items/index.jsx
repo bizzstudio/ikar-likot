@@ -12,6 +12,7 @@ import loginImg from "/loginImg.svg"
 import OrderPreview from "../OrderPreview";
 import BarcodeStockModal from "../BarcodeStockModal";
 import { FiCamera } from "react-icons/fi";
+import { sortOrdersByDeliveryArea, compareByInvoice, isAreaStart } from "../../utils/deliveryAreaSort";
 
 import dayjs from 'dayjs';
 import 'dayjs/locale/he'; // ייבוא תמיכת השפה העברית
@@ -64,17 +65,20 @@ export default function Items({ orders, loading, setLoading, go }) {
   const floorWord = getWord('floor')?.props?.children;
 
   const rowClassName = (record, index) => {
+    // קו מפריד בין אזורים — נוסף על מחלקת הצבע הקיימת ולא במקומה.
+    const area = record?.areaStart && index > 0 ? " areaStart" : "";
+
     if (record?.status?.name === "PendingShortages") {
-      return "t_red";
+      return "t_red" + area;
     }
     if (record?.status?.name === "Likut") {
       if (record?.actualMelaket?.color) {
-        return ""; // מחזיר מחלקה ריקה כדי לא להחיל שום מחלקת CSS
+        return area.trim(); // בלי מחלקת צבע — הצבע מגיע מ-onRowStyle
       } else {
-        return "t_red";
+        return "t_red" + area;
       }
     } else {
-      return "";
+      return area.trim();
     }
   };
 
@@ -129,6 +133,15 @@ export default function Items({ orders, loading, setLoading, go }) {
       title: getWord('createAt'),
       dataIndex: "createAt",
     },
+    // מועד האיסוף מוצג רק בלשונית האיסוף העצמי — בהזמנות משלוח אין מועד כזה,
+    // ועמודה ריקה הייתה רק גוזלת רוחב במסך הצר של המלקט.
+    ...(shippingStatus === 'selfCollecting'
+      ? [{
+        title: getWord('pickupTime'),
+        dataIndex: "pickupSlot",
+        render: (value) => value || "—",
+      }]
+      : []),
   ];
 
   useEffect(() => {
@@ -186,9 +199,19 @@ export default function Items({ orders, loading, setLoading, go }) {
 
   useEffect(() => {
     if (shippingStatus) {
+      // סדר התור: הזמנות המשלוח מקובצות לפי אזור גאוגרפי (כל עיר ברצף) ולא לפי
+      // סדר הקליטה באתר — src/utils/deliveryAreaSort.js. באיסוף עצמי אין כתובת
+      // לקבץ לפיה, ולכן שם נשאר מיון לפי מספר הזמנה.
+      // ה-|| [] אינו קישוט: פריסה של undefined זורקת, ומסך הליקוט כולו היה נופל
+      // לבן אם shippings היה מגיע חלקי (ערך ישן ב-sessionStorage, סדר עדכונים אחר).
+      const sourceOrders =
+        shippingStatus === "deliver"
+          ? sortOrdersByDeliveryArea(shippings.deliver)
+          : [...(shippings.selfCollecting || [])].sort(compareByInvoice);
+
       setData(
-        shippings[shippingStatus]
-          .map((item) => {
+        sourceOrders
+          .map((item, index) => {
             return {
               key: item._id,
               city: cityNames[item.invoice],
@@ -197,11 +220,16 @@ export default function Items({ orders, loading, setLoading, go }) {
               // collected: (sessionStorage.getItem(item.number) ? JSON.parse(sessionStorage.getItem(item.number)).length : '0') + "/" + item.cart.length,
               collected: item.cart.length,
               createAt: formatDate(item.createdAt),
+              // מועד האיסוף שהלקוח בחר (איסוף עצמי בלבד). הזמנות שנוצרו לפני
+              // שהמועדים הוצגו, וכל הזמנות המשלוח, יגיעו בלי הערך הזה.
+              pickupSlot: item.pickupSlot ? formatDate(item.pickupSlot) : null,
               status: item.status,
               actualMelaket: item.actualMelaket,
+              // פותחת קבוצת עיר חדשה — מצייר קו מפריד דק, כדי שהרצף הגאוגרפי
+              // ייראה לעין. תמיד false באיסוף עצמי, שאינו מקובץ לפי עיר.
+              areaStart: shippingStatus === "deliver" && isAreaStart(sourceOrders, index),
             };
           })
-          .sort((a, b) => String(a.number).localeCompare(String(b.number)))
       );
     }
   }, [shippingStatus, cityNames]);

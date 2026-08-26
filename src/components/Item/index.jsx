@@ -27,6 +27,11 @@ import dayjs from "dayjs";
 import loginImg from "/loginImg.svg";
 import { playScanSuccess, playScanError } from "../../utils/soundFeedback";
 import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
+import {
+  isWeighted,
+  isLineFulfilled,
+  formatWeight,
+} from "../../utils/weightPricing";
 
 const API = import.meta.env.VITE_MAIN_SERVER_URL;
 
@@ -89,6 +94,10 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const { language } = useContext(languageContext);
   const nav = useNavigate();
   const t = (key) => getWordString(language, key);
+  // קוד השפה שמודול המשקל מכיר ("he"/"en"/"th") מול השם שהאפליקציה שומרת
+  // ב-localStorage ("hebrew"/"en"/"thai"). בלי המיפוי מלקט תאילנדי היה מקבל
+  // "กก." בעברית — formatWeight נופל לעברית על קוד שאינו מוכר.
+  const weightLang = language === "thai" ? "th" : language === "en" ? "en" : "he";
   // שם מוצר בשפת המלקט (תרגום אוטומטי עם מטמון), ותעתיק שם הלקוח
   const productName = useProductName();
   const { tPerson } = useDynamicTranslation();
@@ -248,7 +257,23 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // שהמלקט מתבקש ללקט רק את הכמות החסרה (למשל 4 מתוך 9) ולא את כל הכמות מחדש.
   const reqOf = (pid) => Math.max(0, (cartByPid[pid]?.quantity || 0) - floorOf(pid));
   const pickedOf = (pid) => pickedQuantities[pid] || 0;
-  const isDone = (pid) => !!shortageItems[pid] || pickedOf(pid) >= reqOf(pid);
+
+  /**
+   * האם הפריט "טופל". במוצר רגיל זהה ל-picked >= req כמו תמיד.
+   * במוצר שקיל שקילה שנפלה מעט מהמשקל שהוזמן (1.42 במקום 1.5) נחשבת טיפול
+   * מלא ולא חוסר — אחרת כל פריט שקיל בכל הזמנה היה תוקע את המלקט על הפריט
+   * ומייצר דיווח חוסרים על 80 גרם. הכלל בשרת זהה (lib/weightPricing.js),
+   * ולכן מה שהמלקט רואה כ"טופל" הוא בדיוק מה שהשרת יראה כך.
+   */
+  const isPickedEnough = (pid, picked = pickedQuantities) =>
+    isLineFulfilled(cartByPid[pid], reqOf(pid), picked[pid] || 0);
+  const isDone = (pid) => !!shortageItems[pid] || isPickedEnough(pid);
+  // האם הפריט נמכר לפי משקל — משנה את שדה הכמות ואת התנהגות הסריקה
+  const isWeightedPid = (pid) => isWeighted(cartByPid[pid]);
+  // כמות לתצוגה: משקל למוצר שקיל, מספר יחידות לכל היתר. כל מסך שמראה כמות
+  // עובר דרך כאן, אחרת "1.42" בתור נקרא כ-1.42 יחידות.
+  const qtyLabel = (pid, n) =>
+    isWeightedPid(pid) ? formatWeight(n, weightLang) : String(n);
 
   // הפריט הנוכחי = הפריט במיקום המצביע, בתוך הרשימה הקבועה (queue לא משתנה בניווט)
   const currentPid =
@@ -286,7 +311,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   const shortageCount = allItems.filter((it) => !!shortageItems[productIdStr(it)]).length;
   const pickedCount = allItems.filter((it) => {
     const pid = productIdStr(it);
-    return !shortageItems[pid] && pickedOf(pid) >= reqOf(pid) && reqOf(pid) > 0;
+    return !shortageItems[pid] && isPickedEnough(pid) && reqOf(pid) > 0;
   }).length;
   const totalCount = allItems.length;
   const allHandled = totalCount > 0 && doneCount === totalCount;
@@ -358,7 +383,8 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       const pid = productIdStr(it);
       if (pid) reqMap[pid] = it.quantity || 0;
     });
-    const doneFn = (pid) => !!short[pid] || (picked[pid] || 0) >= (reqMap[pid] || 0);
+    const doneFn = (pid) =>
+      !!short[pid] || isLineFulfilled(cartByPid[pid], reqMap[pid] || 0, picked[pid] || 0);
     let startIdx = 0;
     // במצב השלמה התור צומצם, ולכן המצביע השמור מהסבב הקודם אינו רלוונטי —
     // מתחילים מהפריט הראשון שטרם הושלם.
@@ -556,6 +582,27 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const matchesCurrent = itemMatchesBarcode(currentItem, scanned);
     if (matchesCurrent) {
       const req = reqOf(currentPid);
+
+      // ---- מוצר שקיל: סריקה אינה +1 ----
+      // אין כאן "יחידה" להוסיף — הכמות היא ק"ג. הסריקה מאשרת שזה הפריט הנכון
+      // ומעבירה את המלקט לשקילה. בלי זה סריקה של שקית עגבניות הייתה מדווחת
+      // "1 ק"ג נלקט" בלי ששקלו כלום.
+      //
+      // השדה נשאר **ריק** בכוונה, והמשקל שהוזמן מוצג רק בהודעה. מילוי מראש של
+      // המשקל שהוזמן היה הופך את "Enter" לדרך מהירה לאשר משקל שאיש לא שקל —
+      // והלקוח מחויב על 1.5 ק"ג שקיבל מהם 1.3. שדה ריק נכשל סגור: Enter עליו
+      // מבטל (ראו confirmQty), הפריט נשאר פתוח, וההזמנה לא תיסגר בלי טיפול בו.
+      if (isWeightedPid(currentPid)) {
+        playScanSuccess();
+        logScan("valid", currentItem._id, scanned, cur);
+        setQtyValue("");
+        setFeedback({ type: "success", msg: `${t("weighPrompt")} ${formatWeight(req, weightLang)}` });
+        // פוקוס אוטומטי מוצדק כאן דווקא (בניגוד להערה בסריקה הרגילה): הפעולה
+        // הבאה של המלקט היא בוודאות הקלדת משקל, ולא סריקה של הפריט הבא.
+        setTimeout(() => qtyInputRef.current?.focus(), 0);
+        return;
+      }
+
       // חריגה מעל הכמות הנדרשת נחסמת (הפריט כבר הושלם)
       if (cur >= req) {
         flashError(t("overQuantityMsg"));
@@ -572,7 +619,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         // הושלמה הכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל.
         // שדה הכמות מתאפס כדי שהפריט הבא יתחיל נקי (גם אפקט currentPid מנקה).
         setQtyValue("");
-        const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
+        const doneFn = (p) => !!shortageItems[p] || isPickedEnough(p, nextPicked);
         persistIndex(findNextPendingIdx(currentIndex, doneFn));
         setFeedback(null);
       } else {
@@ -669,7 +716,16 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (!currentPid) return;
     const pid = currentPid;
     const req = reqOf(pid);
-    const val = parseInt(qtyValue, 10);
+    const weighed = isWeightedPid(pid);
+    // מוצר שקיל — משקל בק"ג, ולכן Number ולא parseInt. parseInt כאן היה הופך
+    // את 1.42 שנקרא מהמאזניים ל-1 בשקט, ומחייב את הלקוח על 1 ק"ג בלבד.
+    //
+    // השדה הריק מטופל **במפורש** ולא דרך Number: Number("") הוא 0, כלומר
+    // Enter על שדה ריק היה נרשם כ"נשקלו 0 ק"ג" — דיווח חוסר מלא על פריט
+    // שהמלקט רק דילג עליו. parseInt("") מחזיר NaN ולכן במוצר רגיל זה תמיד
+    // היה ביטול, וזו ההתנהגות שחייבת להישמר גם כאן.
+    const rawQty = String(qtyValue).trim();
+    const val = weighed ? (rawQty === "" ? NaN : Number(rawQty)) : parseInt(rawQty, 10);
     if (!Number.isFinite(val) || val < 0) {
       setQtyValue(""); // ריק/לא תקין → ביטול בלי שינוי
       return;
@@ -690,13 +746,15 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     // הזנת כמות היא פעולה אנושית מפורשת — היא מייתרת את שער היחידה הבאה
     confirmNextUnit();
     setFeedback(null);
-    if (val >= req) {
+    // "הושלם" עובר דרך אותו כלל של השרת: במוצר שקיל שקילה שנפלה מעט מהמשקל
+    // שהוזמן היא שקילה רגילה ולא חוסר, ולכן לא נפתחת הצעת החוסר.
+    if (isLineFulfilled(cartByPid[pid], req, val)) {
       // הגיע לכמות הנדרשת → מעבר אוטומטי לפריט הבא שעדיין לא טופל
-      const doneFn = (p) => !!shortageItems[p] || (nextPicked[p] || 0) >= reqOf(p);
+      const doneFn = (p) => !!shortageItems[p] || isPickedEnough(p, nextPicked);
       persistIndex(findNextPendingIdx(currentIndex, doneFn));
     } else {
       // כמות חלקית → מציגים הצעה לסמן את היתרה בחוסר (מופיע רק אחרי אישור)
-      setShortagePrompt({ pid, missing: req - val });
+      setShortagePrompt({ pid, missing: req - val, weighed });
     }
   };
 
@@ -711,7 +769,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     const nextShort = { ...shortageItems, [pid]: true };
     persistShortage(nextShort);
     logScan("shortage", item?._id, item?.barcode, pickedOf(pid));
-    const doneFn = (p) => !!nextShort[p] || pickedOf(p) >= reqOf(p);
+    const doneFn = (p) => !!nextShort[p] || isPickedEnough(p);
     persistIndex(findNextPendingIdx(currentIndex, doneFn));
     setShortagePrompt(null);
     setFeedback(null);
@@ -731,7 +789,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     // תיעוד: מי (מהטוקן בשרת), מתי, איזה פריט
     logScan("shortage", currentItem?._id, currentItem?.barcode, pickedOf(pid));
     // הפריט טופל (חוסר) → מעבר אוטומטי לפריט הבא שעדיין לא טופל
-    const doneFn = (p) => !!nextShort[p] || pickedOf(p) >= reqOf(p);
+    const doneFn = (p) => !!nextShort[p] || isPickedEnough(p);
     persistIndex(findNextPendingIdx(currentIndex, doneFn));
     setShortageModal(false);
     setFeedback(null);
@@ -971,7 +1029,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     if (shortageItems[pid]) return { key: "statusShortage", cls: "bg-orange-100 text-orange-700" };
     const p = pickedOf(pid);
     const r = reqOf(pid);
-    if (p >= r && r > 0) return { key: "statusDone", cls: "bg-green-100 text-green-700" };
+    if (isPickedEnough(pid) && r > 0) return { key: "statusDone", cls: "bg-green-100 text-green-700" };
     if (p > 0) return { key: "statusInProgress", cls: "bg-blue-100 text-blue-700" };
     return { key: "statusWaiting", cls: "bg-gray-100 text-gray-600" };
   };
@@ -1138,12 +1196,21 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                 <p className="text-gray-500 text-sm mb-2">
                   {currentItem.barcode}
                 </p>
+                {isWeightedPid(currentPid) && (
+                  /* סימון מפורש — המלקט חייב לדעת שהפריט הזה נשקל ולא נספר */
+                  <p className="inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 mb-1">
+                    {t("weighedProduct")}
+                  </p>
+                )}
                 <p className="text-gray-700">
-                  {t("requiredQty")}: <b>{reqOf(currentPid)}</b>
+                  {t("requiredQty")}: <b>{qtyLabel(currentPid, reqOf(currentPid))}</b>
                 </p>
                 <p className="text-gray-700">
-                  {t("pickedQty")}: <b className="text-mainColor text-xl">{pickedOf(currentPid)}</b>{" "}
-                  {t("ofWord")} {reqOf(currentPid)}
+                  {t("pickedQty")}:{" "}
+                  <b className="text-mainColor text-xl">
+                    {qtyLabel(currentPid, pickedOf(currentPid))}
+                  </b>{" "}
+                  {t("ofWord")} {qtyLabel(currentPid, reqOf(currentPid))}
                 </p>
               </div>
             </div>
@@ -1166,7 +1233,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
               <div className="p-4 border-t bg-orange-50">
                 <div className="flex items-center gap-2 text-orange-700 font-bold mb-3">
                   <FaExclamationTriangle />
-                  {t("partialShortageMsg").replace("{n}", shortagePrompt.missing)}
+                  {t("partialShortageMsg").replace(
+                    "{n}",
+                    shortagePrompt.weighed
+                      ? formatWeight(shortagePrompt.missing, weightLang)
+                      : shortagePrompt.missing
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -1192,7 +1264,12 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                 <div className="mb-3 rounded-lg border-2 border-mainColor bg-white p-3">
                   <label className="flex items-center gap-1 text-sm font-bold text-gray-700 mb-1">
                     <FaKeyboard className="text-mainColor" />
-                    {t("pickedQty")} — {t("requiredQty")}: {reqOf(currentPid)}
+                    {/* מוצר שקיל — הכותרת והכמות הנדרשת בק"ג, אחרת "1.5" נקרא
+                        כיחידה וחצי ומקבלים שקילה שגויה */}
+                    {isWeightedPid(currentPid) ? t("weighedQty") : t("pickedQty")} — {t("requiredQty")}:{" "}
+                    {isWeightedPid(currentPid)
+                      ? formatWeight(reqOf(currentPid), weightLang)
+                      : reqOf(currentPid)}
                   </label>
                   <div className="flex gap-2">
                     <input
@@ -1200,7 +1277,11 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                       type="number"
                       min={0}
                       max={reqOf(currentPid)}
-                      inputMode="numeric"
+                      // מוצר שקיל — קלט עשרוני. step="1" (ברירת המחדל) היה
+                      // מסמן 1.42 כערך לא תקין בדפדפן ומקפיץ מקלדת מספרים
+                      // שלמים בלבד בנייד, כלומר משקל שאי אפשר להקליד.
+                      step={isWeightedPid(currentPid) ? "any" : 1}
+                      inputMode={isWeightedPid(currentPid) ? "decimal" : "numeric"}
                       value={qtyValue}
                       onChange={(e) => setQtyValue(e.target.value)}
                       onFocus={(e) => {
@@ -1423,7 +1504,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm font-medium text-gray-800">{itemName(it)}</div>
                       <div className="text-xs text-gray-500">
-                        {pickedOf(pid)}/{reqOf(pid)}
+                        {qtyLabel(pid, pickedOf(pid))} {t("ofWord")} {qtyLabel(pid, reqOf(pid))}
                       </div>
                     </div>
                     <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${st.cls}`}>

@@ -56,7 +56,8 @@ function App() {
       const getAll = urlParams.get('getAll') === 'true';
       
       // בניית URL עם query parameter אם נדרש
-      // ברירת מחדל: סינון לפי יום החלוקה (byDay) — הזמנה מופיעה מ-18:00 בערב שלפני יום החלוקה שלה.
+      // ברירת מחדל: סינון לפי יום החלוקה (byDay) — מוצגת החלוקה של היום, וזו של מחר
+      // נפתחת מ-17:00 בערב שלפניה. הכלל עצמו: ikar-backend/lib/likutDayFilter.js.
       // getAll=true ב-URL עוקף את הסינון ומציג את כל ההזמנות ששולמו.
       const apiUrl = getAll
         ? `${import.meta.env.VITE_MAIN_SERVER_URL}/app/orders?getAll=true`

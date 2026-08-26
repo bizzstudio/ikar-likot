@@ -10,6 +10,7 @@ import { FaTimes, FaCheckCircle } from "react-icons/fa";
 import dayjs from "dayjs";
 import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
 import { formatLineQuantity } from "../../utils/weightPricing";
+import { buildPickingGroups } from "../../utils/pickingGroups";
 
 export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder }) {
     const { language } = useContext(languageContext);
@@ -110,16 +111,25 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
     // רצפת הליקוט: כמה נלקט לכל שורה בסבב הראשון. נכתבת בשרת (shortageHold.pickedQuantities),
     // ומכילה ערך לכל שורה — picked==ordered לפריט שלוקט במלואו.
     const pickedFloor = order?.shortageHold?.pickedQuantities || {};
-    const relevantCart = order?.cart || [];
+    // התצוגה כאן חייבת להיות אותה תצוגה שהמלקט יראה במסך הליקוט: שורות של אותו
+    // מוצר פיזי (למשל שורה בתשלום ושורת מתנה) מאוחדות לשורה אחת עם סכום הכמויות.
+    // ראו src/utils/pickingGroups.js.
+    const pickingGroups = buildPickingGroups(order?.cart || []);
+    const groupByKey = {};
+    pickingGroups.forEach((g) => { groupByKey[g.key] = g; });
+    const relevantCart = pickingGroups.map((g) => g.item);
 
     // סטטוס פריט במסך השלמת החוסרים. נגזר מ-repickItems ומרצפת הליקוט בלבד
     // (בלי תלות ב-shortageResolution): פריט ב-repick חזר לליקוט; פריט שלוקט חלקית
     // ולא חזר לליקוט — החוסר בו אושר; פריט שלוקט במלואו — טופל.
     const getItemStatus = (item) => {
         const key = String(item.id ?? item._id);
+        // repickItems והרצפה נכתבים בשרת לפי **שורת עגלה**; בשורה מאוחדת מסכמים
+        // על פני כל השורות שמרכיבות אותה.
+        const memberPids = groupByKey[key]?.members?.map((m) => m.pid) || [key];
         const required = Number(item.quantity) || 0;
-        const floor = Number(pickedFloor[key] ?? 0);
-        if (repickSet.has(key)) {
+        const floor = memberPids.reduce((sum, p) => sum + Number(pickedFloor[p] ?? 0), 0);
+        if (memberPids.some((p) => repickSet.has(p))) {
             if (floor > 0 && floor < required) {
                 return {
                     kind: "repick",
@@ -174,7 +184,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                     const barcode = item.barcode || "";
                     const productTitle = productName(item);
                     return {
-                        key: item._id,
+                        key: String(item.id ?? item._id),
                         rowBarcode: barcode,
                         rowTitle: productTitle,
                         // מוצג רק שם המוצר — המחיר הוסר מתצוגת המלקט לפי האפיון (§1: מידע תפעולי בלבד)

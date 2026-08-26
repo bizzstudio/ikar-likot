@@ -14,6 +14,7 @@ import BarcodeStockModal from "../BarcodeStockModal";
 import { FiCamera } from "react-icons/fi";
 import { sortOrdersByDeliveryArea, sortOrdersByPickupSlot, isAreaStart } from "../../utils/likutQueueSort";
 import { formatStoreDateTime } from "../../utils/storeTime";
+import { buildPickingGroups } from "../../utils/pickingGroups";
 
 import dayjs from 'dayjs';
 import 'dayjs/locale/he'; // ייבוא תמיכת השפה העברית
@@ -234,7 +235,10 @@ export default function Items({ orders, loading, setLoading, go }) {
               number: item.invoice,
               total: item.total,
               // collected: (sessionStorage.getItem(item.number) ? JSON.parse(sessionStorage.getItem(item.number)).length : '0') + "/" + item.cart.length,
-              collected: item.cart.length,
+              // מספר שורות הליקוט, לא שורות העגלה: שורות של אותו מוצר פיזי
+              // (למשל תשלום + מתנה) מאוחדות במסך הליקוט, וספירה שונה כאן
+              // הייתה מבטיחה למלקט מספר פריטים אחר ממה שיקבל בפועל.
+              collected: buildPickingGroups(item.cart).length,
               createAt: formatDate(item.createdAt),
               // מועד האיסוף שהלקוח בחר (איסוף עצמי בלבד). הזמנות שנוצרו לפני
               // שהמועדים הוצגו, וכל הזמנות המשלוח, יגיעו בלי הערך הזה.

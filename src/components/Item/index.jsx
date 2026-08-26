@@ -33,6 +33,12 @@ import {
   formatWeight,
 } from "../../utils/weightPricing";
 import { sortCartByPickingOrder } from "../../utils/pickingOrder";
+import {
+  buildPickingGroups,
+  distributeQuantity,
+  groupPickedFrom,
+  groupShortageFrom,
+} from "../../utils/pickingGroups";
 
 const API = import.meta.env.VITE_MAIN_SERVER_URL;
 
@@ -63,8 +69,12 @@ const normalizeBarcode = (v) =>
   String(v ?? "").trim().replace(/\s+/g, "").toUpperCase();
 // מזהה **שורת עגלה** ולא מזהה מוצר. `_id` אינו ייחודי: מוצר עם ווריאנטים מייצר
 // כמה שורות עם אותו `_id` ו-`id` שונה, ושורת מתנה נבנית מהמוצר עצמו ולכן חולקת
-// את ה-`_id` של השורה הרגילה. מיפוי לפי `_id` קיפל שתי שורות לאחת והציג למלקט
-// כמות שגויה. במוצר ללא ווריאנטים `id === _id`, ולכן תואם לאחור.
+// את ה-`_id` של השורה הרגילה. במוצר ללא ווריאנטים `id === _id`, ולכן תואם לאחור.
+//
+// מכאן ואילך המסך עובד על **קבוצות ליקוט** ולא על שורות עגלה, ולכן ה-pid שמגיע
+// לפונקציה הזו הוא מזהה השורה הראשית של הקבוצה. האיחוד עצמו הוא מכוון ומוגדר
+// ב-utils/pickingGroups.js — הוא **אינו** קיפול בשוגג לפי `_id`: ווריאנטים
+// נשארים נפרדים, והחלוקה בחזרה לשורות נעשית בסגירה.
 const productIdStr = (item) => {
   const key = item?.id ?? item?._id;
   return key != null ? String(key) : null;
@@ -235,24 +245,40 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
   // בשרת ב-shortageHold.pickedQuantities. משמשת פעמיים: (1) לקזז מהכמות הנדרשת כך
   // שהמלקט ילקט רק את החסר ולא את הכל מחדש; (2) להוסיף בסגירה לכמות הכוללת שנשלחת
   // לשרת (הבסיס לחיוב). ריק לפריט שאינו repick / מחוץ למצב השלמה.
-  const floorOf = (pid) =>
-    repickSet.has(String(pid))
-      ? Number(order?.shortageHold?.pickedQuantities?.[pid]) || 0
-      : 0;
+  // הרצפה נשמרת בשרת לפי **שורת עגלה**, ולכן בקבוצה מאוחדת היא סכום הרצפות של
+  // כל השורות שבה — אחרת חצי ממה שכבר לוקט בסבב הראשון היה נדרש שוב.
+  const floorOf = (pid) => {
+    const memberPids = groupByPid[pid]?.members?.map((m) => m.pid) || [String(pid)];
+    if (!memberPids.some((p) => repickSet.has(p))) return 0;
+    return memberPids.reduce(
+      (sum, p) => sum + (Number(order?.shortageHold?.pickedQuantities?.[p]) || 0),
+      0
+    );
+  };
   // סריקת הארגזים מאומתת בשרת (boxScanVerifiedAt); boxScanDone מאפשר להמשיך מיד
   // אחרי אימות מוצלח בלי לרענן את ההזמנה מהשרת.
   const [boxScanDone, setBoxScanDone] = useState(false);
   const needsBoxScan = isShortageCompletion && !order?.boxScanVerifiedAt && !boxScanDone;
 
   // ---- מפות עזר ----
+  // קבוצות ליקוט: שורות של **אותו מוצר פיזי** מאוחדות לשורה אחת עם סכום
+  // הכמויות — מוצר שהוזמן בתשלום וגם ניתן כמתנה יורד מהמדף פעם אחת, וכל עוד
+  // הוצג בשתי שורות המלקט עבר עליו פעמיים ושתיהן סומנו יחד. מפתח הקבוצה הוא
+  // מזהה השורה הראשית, ולכן בקבוצה בת שורה אחת (המצב הרגיל) שום דבר לא זז.
+  // ראו src/utils/pickingGroups.js.
+  const groups = useMemo(() => buildPickingGroups(order?.cart || []), [order]);
+  const groupByPid = useMemo(() => {
+    const m = {};
+    groups.forEach((g) => { m[g.key] = g; });
+    return m;
+  }, [groups]);
+  // שורת התצוגה של הקבוצה: השורה הראשית עם הכמות המאוחדת. כל מי שקרא עד היום
+  // cartByPid[pid] ממשיך לקבל שורת עגלה רגילה, פשוט עם הכמות הנכונה.
   const cartByPid = useMemo(() => {
     const m = {};
-    (order?.cart || []).forEach((it) => {
-      const pid = productIdStr(it);
-      if (pid) m[pid] = it;
-    });
+    groups.forEach((g) => { m[g.key] = g.item; });
     return m;
-  }, [order]);
+  }, [groups]);
 
   // הכמות הנדרשת. בהשלמת חוסרים לפריט repick מקזזים את מה שכבר נלקט (הרצפה), כך
   // שהמלקט מתבקש ללקט רק את הכמות החסרה (למשל 4 מתוך 9) ולא את כל הכמות מחדש.
@@ -295,7 +321,9 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     return from; // הכל טופל — נשארים במקום
   };
 
-  const allItems = order?.cart || [];
+  // "פריט" מכאן ואילך = קבוצת ליקוט, לא שורת עגלה: זו יחידת העבודה של המלקט,
+  // ולכן גם יחידת הספירה במוני ההתקדמות ובחיפוש הברקוד.
+  const allItems = useMemo(() => groups.map((g) => g.item), [groups]);
   // מוני ההתקדמות מתייחסים לפריטים שבתור בפועל. בהשלמת חוסרים התור מצומצם
   // לפריטים שהוחזרו לליקוט בלבד, ולכן ספירה על כל העגלה הייתה מציגה למלקט
   // "פריט 1 מתוך 23" כשיש לו בפועל 2 פריטים לטפל בהם.
@@ -331,14 +359,18 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     // מספר שאין לו שום קשר למיקום הפיזי, והמלקטת הלכה הלוך ושוב בין המדפים.
     // הברקוד נשאר שובר-השוויון, ולכן הסדר עדיין דטרמיניסטי: זהה בכל טעינה ובכל
     // מכשיר, וזה תנאי לכך שהמצביע השמור (currentIndex) יצביע על אותו פריט.
-    let stableOrder = sortCartByPickingOrder(order.cart)
+    let stableOrder = sortCartByPickingOrder(allItems)
       .map((it) => productIdStr(it))
       .filter(Boolean);
 
     // במצב השלמת חוסרים מציגים אך ורק את הפריטים שהמנהל סימן "החזרה להשלמת ליקוט".
     // כל השאר כבר לוקטו או שהחוסר בהם אושר — אין מה לעשות איתם.
+    // repickItems הם מזהי **שורות עגלה**; קבוצה נכנסת לתור אם ולו אחת מהשורות
+    // שלה הוחזרה לליקוט.
     if (isShortageCompletion && repickItems.length > 0) {
-      stableOrder = stableOrder.filter((pid) => repickItems.includes(pid));
+      stableOrder = stableOrder.filter((pid) =>
+        (groupByPid[pid]?.members || []).some((m) => repickItems.includes(m.pid))
+      );
     }
 
     // מקור אמת ראשון: התקדמות שנשמרה בשרת (המשך מאותו מצב גם בין מכשירים);
@@ -358,11 +390,27 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       savedIdx = Number.isInteger(si) ? si : null;
     }
 
+    // המפות שנקראו זה עתה ממופתחות לפי **קבוצה** (המסך שמר אותן) או לפי
+    // **שורת עגלה** (השרת כתב אותן ב-send-and-update). ההמרה לקבוצות מכסה את
+    // שני המקרים ומשמיטה מפתחות של שורות שאינן בעגלה עוד.
+    picked = Object.fromEntries(
+      groups
+        .map((g) => [g.key, groupPickedFrom(picked, g)])
+        // רק מה שנלקט בפועל, כמו קודם: מפה שמכילה 0 לכל שורה נקראת באדמין
+        // כ"השורה כבר טופלה" (likutProgressView בודק נוכחות מפתח).
+        .filter(([, qty]) => qty > 0)
+    );
+    short = Object.fromEntries(
+      groups.filter((g) => groupShortageFrom(short, g)).map((g) => [g.key, true])
+    );
+
     // פריט שהוחזר להשלמת ליקוט סומן בחוסר בסבב הקודם. אם נשאיר את הסימון —
     // isDone יחזיר עליו true, הוא ייחשב "טופל" ומסך הסיום ייפתח מיד בלי ללקט אותו.
     if (isShortageCompletion && repickItems.length > 0) {
       short = { ...short };
-      repickItems.forEach((pid) => delete short[pid]);
+      const isRepickGroup = (pid) =>
+        (groupByPid[pid]?.members || []).some((m) => repickSet.has(m.pid));
+      stableOrder.filter(isRepickGroup).forEach((pid) => delete short[pid]);
       // בכניסה ראשונה להשלמה (טרם נסרקו הארגזים) מאפסים את מונה הליקוט של פריטי
       // ה-repick ל-0, כדי שהמלקט ילקט רק את הכמות החסרה (reqOf כבר מקזז את הרצפה,
       // והרצפה תתווסף בחזרה בסגירה). אחרי סריקת הארגזים (boxScanVerifiedAt חתום)
@@ -370,7 +418,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       // יצא וחזר באמצע ההשלמה. הרצפה עצמה נשמרת בשרת (shortageHold) ואינה נדרסת.
       if (!order.boxScanVerifiedAt) {
         picked = { ...picked };
-        repickItems.forEach((pid) => { picked[pid] = 0; });
+        stableOrder.filter(isRepickGroup).forEach((pid) => { picked[pid] = 0; });
       }
     }
 
@@ -383,10 +431,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
 
     // מיקום התחלתי: המשך מהמיקום השמור, אחרת הפריט הראשון שעדיין לא טופל.
     const reqMap = {};
-    order.cart.forEach((it) => {
-      const pid = productIdStr(it);
-      if (pid) reqMap[pid] = it.quantity || 0;
-    });
+    groups.forEach((g) => { reqMap[g.key] = g.item.quantity || 0; });
     const doneFn = (pid) =>
       !!short[pid] || isLineFulfilled(cartByPid[pid], reqMap[pid] || 0, picked[pid] || 0);
     let startIdx = 0;
@@ -424,7 +469,40 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       // numOfBoxes נשלח רק כשיש בו ערך אמיתי. במצב השלמת חוסרים השדה מתחיל ריק
       // (שואלים שוב), וה-PATCH הראשון היה כותב numOfBoxes:"" ומוחק את מספר
       // הארגזים שנשמר בסבב הראשון — המספר שעליו מבוסס אימות סריקת הארגזים.
-      const progress = { pickedQuantities, shortageItems, queue, currentIndex };
+      // ההתקדמות נשלחת לשרת לפי **שורת עגלה** ולא לפי קבוצת ליקוט: מסך ההזמנה
+      // באדמין מציג ליקוט חי שורה-שורה (utils/likutProgressView.js), ומפה
+      // ממופתחת-קבוצה הייתה מציגה שם שורת מתנה כאילו לא לוקטה עד סגירת ההזמנה.
+      // הקריאה חזרה מכוסה משני הכיוונים (groupPickedFrom).
+      const perLinePicked = {};
+      const perLineShortage = {};
+      groups.forEach((g) => {
+        const split = distributeQuantity(g, pickedQuantities[g.key] || 0);
+        Object.entries(split).forEach(([pid, qty]) => {
+          if (qty > 0) perLinePicked[pid] = qty;
+        });
+        // חוסר מסומן רק על השורות שנשארו חסרות אחרי החלוקה, ולא על כל שורות
+        // הקבוצה: בקבוצה מאוחדת שלוקטה חלקית (השורה בתשלום מלאה, המתנה ריקה)
+        // סימון גורף היה מציג באדמין את השורה בתשלום כ"בחוסר" עם חוסר 0.
+        // זו גם בדיוק ההכרעה שהשרת יגיע אליה בסגירה מתוך pickedItems
+        // (isLineFulfilled פר-שורה), כך שהתצוגה החיה והתמונה הסופית מסכימות.
+        if (shortageItems[g.key]) {
+          const short = g.members.filter(
+            (m) => !isLineFulfilled(g.item, m.quantity, split[m.pid] || 0)
+          );
+          // אם אחרי החלוקה אף שורה אינה חסרה (המלקט סימן בחוסר פריט שכבר לוקט
+          // במלואו), הסימון נרשם על השורה הראשית — אחרת הוא היה נעלם בכניסה
+          // חוזרת למסך, כלומר פעולה מפורשת של המלקט שנמחקת בשקט.
+          (short.length ? short : [{ pid: g.key }]).forEach((m) => {
+            perLineShortage[m.pid] = true;
+          });
+        }
+      });
+      const progress = {
+        pickedQuantities: perLinePicked,
+        shortageItems: perLineShortage,
+        queue,
+        currentIndex,
+      };
       const boxes = parseInt(numOfBoxes, 10);
       if (Number.isFinite(boxes) && boxes > 0) progress.numOfBoxes = boxes;
 
@@ -439,7 +517,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     progressTimerRef.current = timer;
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex]);
+  }, [pickedQuantities, shortageItems, queue, numOfBoxes, currentIndex, groups]);
 
   // הערת לקוח (בעברית כמו שהיא; שאר השפות — הטקסט המקורי, ללא תרגום חיצוני חוסם)
   useEffect(() => {
@@ -881,7 +959,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
     }
 
     // כל הפריטים חייבים להיות מטופלים (הושלמו או סומנו בחוסר מאושר)
-    const allDone = order?.cart?.every((item) => isDone(productIdStr(item)));
+    const allDone = groups.length > 0 && groups.every((g) => isDone(g.key));
     if (!allDone) {
       alert(t("notAllItemsMarked"));
       return;
@@ -905,17 +983,25 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
       // alreadyCompleted, והטיפול בה נמצא ב-catch של הקריאה עצמה.
       // (הבדיקה הישנה גם פירשה תקלת רשת כ"כבר הושלמה" ועצרה סגירה תקינה.)
 
-      // בניית pickedItems לפי הכמות שנלקטה בפועל
+      // בניית pickedItems לפי הכמות שנלקטה בפועל.
+      // המסך מלקט לפי **קבוצה** (מוצר פיזי אחד), והשרת מחשב חיוב ודיווח חוסרים
+      // לפי **שורת עגלה** (lineKey) — ולכן הכמות מתחלקת כאן בחזרה לשורות
+      // המקוריות: שורה בתשלום קודם, שורת מתנה אחרונה, כך שחוסר יורד מהמתנה ולא
+      // ממה שהלקוח שילם עליו. בקבוצה בת שורה אחת זו העברה 1:1 כמו קודם.
+      const perLine = {};
+      groups.forEach((g) => {
+        // בהשלמת חוסרים פריט repick נספר מ-0 (הכמות החסרה בלבד); מוסיפים חזרה את
+        // הרצפה שנלקטה בסבב הראשון כדי לשלוח לשרת את הכמות הכוללת (הבסיס לחיוב).
+        // floorOf מחזיר 0 מחוץ למצב השלמה / לפריט שאינו repick — התנהגות רגילה.
+        const total = (pickedQuantities[g.key] || 0) + floorOf(g.key);
+        Object.assign(perLine, distributeQuantity(g, total));
+      });
       // id = מזהה השורה (מבחין בין ווריאנטים/מתנות של אותו מוצר), _id נשמר
       // לתאימות עם שרת שטרם עודכן. השרת מעדיף את id.
       const pickedItems = order.cart
         .map((item) => {
           const pid = productIdStr(item);
-          // בהשלמת חוסרים פריט repick נספר מ-0 (הכמות החסרה בלבד); מוסיפים חזרה את
-          // הרצפה שנלקטה בסבב הראשון כדי לשלוח לשרת את הכמות הכוללת (הבסיס לחיוב).
-          // floorOf מחזיר 0 מחוץ למצב השלמה / לפריט שאינו repick — התנהגות רגילה.
-          const quantity = (pickedQuantities[pid] || 0) + floorOf(pid);
-          return { _id: item._id, id: pid, quantity };
+          return { _id: item._id, id: pid, quantity: perLine[pid] || 0 };
         })
         .filter((item) => item.quantity > 0);
 
@@ -1214,6 +1300,14 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
                   /* סימון מפורש — המלקט חייב לדעת שהפריט הזה נשקל ולא נספר */
                   <p className="inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 mb-1">
                     {t("weighedProduct")}
+                  </p>
+                )}
+                {groupByPid[currentPid]?.merged && (
+                  /* הכמות כאן היא סכום של כמה שורות בהזמנה (למשל שורה בתשלום
+                     ושורת מתנה של אותו מוצר). אומרים את זה במפורש, אחרת המלקט
+                     רואה כמות שאינה תואמת לשום שורה בהזמנה המודפסת. */
+                  <p className="inline-block text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 mb-1">
+                    {t("mergedLineNote").replace("{n}", String(groupByPid[currentPid].lineCount))}
                   </p>
                 )}
                 <p className="text-gray-700">

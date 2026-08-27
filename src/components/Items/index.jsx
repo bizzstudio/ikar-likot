@@ -15,6 +15,8 @@ import { FiCamera } from "react-icons/fi";
 import { sortOrdersByDeliveryArea, sortOrdersByPickupSlot, isAreaStart } from "../../utils/likutQueueSort";
 import { formatStoreDateTime } from "../../utils/storeTime";
 import { buildPickingGroups } from "../../utils/pickingGroups";
+import { useDynamicTranslation } from "../../i18n/DynamicTranslation";
+import { customerFullName } from "../../utils/customerName";
 
 import dayjs from 'dayjs';
 import 'dayjs/locale/he'; // ייבוא תמיכת השפה העברית
@@ -22,6 +24,8 @@ import 'dayjs/locale/en'; // ייבוא תמיכת השפה האנגלית
 
 export default function Items({ orders, loading, setLoading, go }) {
   const { language } = useContext(languageContext);
+  // שם הלקוח מגיע מה-DB ולכן מתורגם בתרגום הדינמי (ולא בטבלת המחרוזות הקבועה).
+  const { tPerson } = useDynamicTranslation();
 
   const nav = useNavigate();
 
@@ -157,10 +161,23 @@ export default function Items({ orders, loading, setLoading, go }) {
     },
     // עמודות סכום וכמות הוסרו מתצוגת המלקט לפי האפיון —
     // המלקט צריך רק מידע תפעולי: כתובת, מספר הזמנה, שעה.
-    {
-      title: getWord('createAt'),
-      dataIndex: "createAt",
-    },
+    //
+    // בלשונית האיסוף העצמי שעת ההזמנה חסרת ערך תפעולי — מועד האיסוף כבר מוצג
+    // בעמודה הראשונה, ומתי ההזמנה נקלטה באתר אינו אומר למלקט דבר. מה שכן נדרש
+    // שם הוא שם הלקוח: לקוח שמגיע לחנות והזמנתו טרם לוקטה מזוהה לפי שמו, ובלעדיו
+    // צריך לפתוח כל הזמנה בנפרד כדי לדעת של מי היא.
+    shippingStatus === 'selfCollecting'
+      ? {
+        title: getWord('customerName'),
+        dataIndex: "customerName",
+        // התרגום נקרא בזמן הרינדור ולא בבניית הנתונים: תרגום שמגיע מאוחר יותר
+        // מהשרת מרנדר מחדש דרך ההקשר, בעוד ערך שנשמר ב-state היה נשאר בעברית.
+        render: (value) => (value ? tPerson(value) : "—"),
+      }
+      : {
+        title: getWord('createAt'),
+        dataIndex: "createAt",
+      },
   ];
 
   useEffect(() => {
@@ -240,6 +257,8 @@ export default function Items({ orders, loading, setLoading, go }) {
               // הייתה מבטיחה למלקט מספר פריטים אחר ממה שיקבל בפועל.
               collected: buildPickingGroups(item.cart).length,
               createAt: formatDate(item.createdAt),
+              // המקור בעברית כפי שנשמר בהזמנה — התרגום נעשה בעמודה עצמה.
+              customerName: customerFullName(item),
               // מועד האיסוף שהלקוח בחר (איסוף עצמי בלבד). הזמנות שנוצרו לפני
               // שהמועדים הוצגו, וכל הזמנות המשלוח, יגיעו בלי הערך הזה.
               // נקרא בשעון החנות ולא בשעון המכשיר — src/utils/storeTime.js.

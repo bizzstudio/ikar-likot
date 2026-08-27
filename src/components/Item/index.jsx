@@ -33,6 +33,7 @@ import {
   formatWeight,
 } from "../../utils/weightPricing";
 import { sortCartByPickingOrder } from "../../utils/pickingOrder";
+import { customerFullName } from "../../utils/customerName";
 import {
   buildPickingGroups,
   distributeQuantity,
@@ -1531,7 +1532,7 @@ export default function Item({ setOrders, setUpdateOrders, setId }) {
         {/* פרטי לקוח + הערות */}
         <div className="mt-4 text-sm text-gray-600 leading-6">
           <p>
-            {t("name")}: {tPerson(`${order?.user_info?.name || ""} ${order?.user_info?.lastName || ""}`.trim())}
+            {t("name")}: {tPerson(customerFullName(order))}
           </p>
           <p>
             {t("phone")}: {order?.user_info?.contact}

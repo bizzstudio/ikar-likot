@@ -11,6 +11,7 @@ import dayjs from "dayjs";
 import { useProductName, useDynamicTranslation } from "../../i18n/DynamicTranslation";
 import { formatLineQuantity } from "../../utils/weightPricing";
 import { buildPickingGroups } from "../../utils/pickingGroups";
+import { customerFullName } from "../../utils/customerName";
 
 export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder }) {
     const { language } = useContext(languageContext);
@@ -280,7 +281,7 @@ export default function OrderPreview({ order, isOpen, onClose, onContinueToOrder
                                             </button>
 
                                             <p className="mb-1 leading-6">
-                                                {words.name.props.children}: {tPerson(`${order?.user_info?.name || ''} ${order?.user_info?.lastName || ''}`.trim())}
+                                                {words.name.props.children}: {tPerson(customerFullName(order))}
                                             </p>
                                             <p className="mb-1 leading-6"> {words.phone.props.children}: {order?.user_info?.contact}</p>
                                             <p className="mb-1 leading-6"> {words.id.props.children}: {order.invoice}</p>

@@ -144,8 +144,19 @@ export default function Items({ orders, loading, setLoading, go }) {
         render: (value) => value || "—",
       }
       : {
-        title: getWord('address'),
+        // שם הלקוח מעל הכתובת באותה עמודה: המלקט מזהה הזמנה לפי הלקוח, והכתובת
+        // לבדה לא מספיקה כשיש כמה הזמנות באותה עיר. עמודה נפרדת לשם הייתה צרה
+        // מדי במסך הטלפון.
+        title: getWord('customerDetails'),
         dataIndex: "city",
+        render: (city, record) => (
+          <div>
+            <div className="font-bold">
+              {record.customerName ? tPerson(record.customerName) : "—"}
+            </div>
+            <div>{city}</div>
+          </div>
+        ),
       },
     {
       title: getWord('id'),
